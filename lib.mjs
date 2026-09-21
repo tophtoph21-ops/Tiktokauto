@@ -12,13 +12,74 @@ function key(secret){return crypto.createHash('sha256').update(secret).digest()}
 export function encrypt(v,secret){if(!v)return'';const iv=crypto.randomBytes(12),c=crypto.createCipheriv('aes-256-gcm',key(secret),iv),enc=Buffer.concat([c.update(v,'utf8'),c.final()]),tag=c.getAuthTag();return [iv,tag,enc].map(x=>x.toString('base64url')).join('.')}
 export function decrypt(v,secret){if(!v)return'';try{const [a,b,c]=v.split('.').map(x=>Buffer.from(x,'base64url')),d=crypto.createDecipheriv('aes-256-gcm',key(secret),a);d.setAuthTag(b);return Buffer.concat([d.update(c),d.final()]).toString('utf8')}catch{return''}}
 
-const demoHooks=['Personne ne te montre ce détail…','J’aurais aimé connaître ça avant.','Ce petit objet règle un problème pénible.','Le test le plus simple pour savoir si ça vaut le coup.','Je pensais que c’était gadget… jusqu’à ce test.'];
-function demoConcept(product,niche,format,i=0){const name=product?.name||`astuce ${niche}`,hook=demoHooks[i%demoHooks.length];return{title:`${name} — angle ${i+1}`,hook,hook_score:Math.max(55,90-i*5),script:`Voici ${name}. On montre le problème de départ, le produit en situation et le résultat réel, sans exagération. ${product?.notes||'Utilise uniquement des caractéristiques réellement vérifiées.'} L’objectif est une démonstration courte, utile et crédible, avec une conclusion claire.`,caption:`${name} : démonstration simple. #${String(niche).replace(/\s+/g,'')} #astuce #produit`,cta:'Tu peux vérifier le produit et ses détails depuis la fiche associée.',visual_beats:['Problème en 2 secondes','Produit en gros plan','Démonstration','Résultat réel','CTA discret']}}
+const demoHooks=[
+'Personne ne te montre ce détail…',
+'J’aurais aimé connaître ça avant.',
+'Ce petit objet règle un problème pénible.',
+'Le test le plus simple pour savoir si ça vaut le coup.',
+'Je pensais que c’était gadget… jusqu’à ce test.'
+];
+
+function freeConcept(product,niche,format,i=0){
+  const name=product?.name||`astuce ${niche}`;
+  const notes=(product?.notes||'Montre uniquement ce qui est réellement visible ou vérifié.').trim();
+  const hooks=[
+    `Tu connais ce problème ? Voilà une solution simple.`,
+    `Avant d’acheter ${name}, regarde ça.`,
+    `${name} : utile ou juste gadget ?`,
+    `Le détail à vérifier sur ${name}.`,
+    `Une façon simple d’utiliser ${name}.`
+  ];
+  const hook=hooks[i%hooks.length];
+  const bodies=[
+    `On part d’un problème concret et on montre directement ${name}. ${notes} Pas de promesse exagérée : on montre le produit, son usage et le résultat observable. Si ça correspond à ton besoin, regarde les détails du produit avant de décider.`,
+    `Voici ${name}. L’idée est simple : montrer en quelques secondes à quoi il sert, comment il s’utilise et ce qu’on peut réellement constater. ${notes} Le but est de rester clair, rapide et honnête.`,
+    `Petit test rapide de ${name}. D’abord le problème, ensuite la démonstration, puis le résultat. ${notes} Vérifie toujours les caractéristiques et le prix avant achat.`
+  ];
+  return {
+    title:`${name} — vidéo ${i+1}`,
+    hook,
+    hook_score:78-i*3,
+    script:bodies[i%bodies.length],
+    caption:`${name} — démonstration rapide. #${String(niche).replace(/\s+/g,'')} #astuce #produit`,
+    cta:'Les détails du produit sont disponibles depuis la fiche associée.',
+    visual_beats:['Problème','Produit','Utilisation','Résultat','CTA']
+  };
+}
+function demoConcept(product,niche,format,i=0){return freeConcept(product,niche,format,i)}
 async function openaiJson(prompt){const r=await fetch('https://api.openai.com/v1/responses',{method:'POST',headers:{authorization:`Bearer ${process.env.OPENAI_API_KEY}`,'content-type':'application/json'},body:JSON.stringify({model:process.env.OPENAI_TEXT_MODEL||'gpt-5.6-luna',input:prompt,text:{format:{type:'json_object'}}})});const d=await r.json();if(!r.ok)throw new Error(d?.error?.message||`OpenAI ${r.status}`);const text=d.output_text||d.output?.flatMap(x=>x.content||[]).find(x=>x.type==='output_text')?.text;if(!text)throw new Error('OpenAI n’a retourné aucun JSON');return JSON.parse(text)}
 export async function testOpenAI(){if(!process.env.OPENAI_API_KEY)throw new Error('Clé OpenAI absente');const r=await fetch('https://api.openai.com/v1/models',{headers:{authorization:`Bearer ${process.env.OPENAI_API_KEY}`}});if(!r.ok)throw new Error(`Clé OpenAI refusée (${r.status})`);return true}
-export async function generateConceptVariants({product,niche,format,count=3}){count=Math.max(1,Math.min(5,count));if(process.env.DEMO_MODE==='true'||!process.env.OPENAI_API_KEY)return Array.from({length:count},(_,i)=>demoConcept(product,niche,format,i));const facts=product?JSON.stringify({name:product.name,category:product.category,price:product.price,commission_rate:product.commission_rate,notes:product.notes}):'aucun produit';const prompt=`Tu crées des scripts TikTok faceless orientés conversion, mais exacts et non trompeurs. Produit/faits autorisés: ${facts}. Niche: ${niche}. Format: ${format}. Génère exactement ${count} variantes vraiment différentes. Chaque variante: title, hook très court, hook_score/100, script 75-120 mots, caption avec 2 à 5 hashtags pertinents, cta discret, visual_beats (5 éléments). N’invente aucune caractéristique produit absente. Pas de faux avis, fausse rareté, promesse médicale ou financière. JSON strict: {"variants":[...]}.`;const d=await openaiJson(prompt);return (d.variants||[]).slice(0,count)}
-export async function synthesizeSpeech(text,outFile){fs.mkdirSync(path.dirname(outFile),{recursive:true});if(process.env.DEMO_MODE==='true'||!process.env.OPENAI_API_KEY){await run('ffmpeg',['-y','-f','lavfi','-i','anullsrc=r=44100:cl=mono','-t','14','-c:a','aac',outFile]);return outFile}const r=await fetch('https://api.openai.com/v1/audio/speech',{method:'POST',headers:{authorization:`Bearer ${process.env.OPENAI_API_KEY}`,'content-type':'application/json'},body:JSON.stringify({model:process.env.OPENAI_TTS_MODEL||'gpt-4o-mini-tts',voice:process.env.OPENAI_TTS_VOICE||'coral',input:text,format:'mp3'})});if(!r.ok)throw new Error(`TTS ${r.status}: ${(await r.text()).slice(0,400)}`);fs.writeFileSync(outFile,Buffer.from(await r.arrayBuffer()));return outFile}
-export async function generateVisual({product,concept,outFile}){fs.mkdirSync(path.dirname(outFile),{recursive:true});if(process.env.DEMO_MODE==='true'||!process.env.OPENAI_API_KEY)return null;const facts=[product?.name,product?.category,product?.notes].filter(Boolean).join(' — ');const prompt=`Create a clean vertical commercial-style background image for a short social video. Subject: ${facts||concept.title}. Show only details supported by the description. No text, no logos, no watermark, no people making endorsements. Modern realistic product-demo composition, neutral background, room for captions, vertical 1024x1536.`;const r=await fetch('https://api.openai.com/v1/images/generations',{method:'POST',headers:{authorization:`Bearer ${process.env.OPENAI_API_KEY}`,'content-type':'application/json'},body:JSON.stringify({model:process.env.OPENAI_IMAGE_MODEL||'gpt-image-2.5-flare',prompt,size:'1024x1536',quality:'medium',output_format:'jpeg'})});const d=await r.json();if(!r.ok)throw new Error(d?.error?.message||`Image OpenAI ${r.status}`);const b64=d?.data?.[0]?.b64_json;if(!b64)return null;fs.writeFileSync(outFile,Buffer.from(b64,'base64'));return outFile}
+export async function generateConceptVariants({product,niche,format,count=3}){
+  count=Math.max(1,Math.min(5,count));
+  const paid=process.env.ZERO_COST_MODE==='false' && process.env.OPENAI_API_KEY && process.env.DEMO_MODE!=='true';
+  if(!paid) return Array.from({length:count},(_,i)=>freeConcept(product,niche,format,i));
+  const facts=product?JSON.stringify({name:product.name,category:product.category,price:product.price,commission_rate:product.commission_rate,notes:product.notes}):'aucun produit';
+  const prompt=`Tu crées des scripts TikTok faceless exacts et non trompeurs. Produit/faits autorisés: ${facts}. Niche: ${niche}. Format: ${format}. Génère exactement ${count} variantes différentes. JSON strict: {"variants":[...]}.`;
+  const d=await openaiJson(prompt);
+  return (d.variants||[]).slice(0,count);
+}
+export async function synthesizeSpeech(text,outFile){
+  fs.mkdirSync(path.dirname(outFile),{recursive:true});
+  const paid=process.env.ZERO_COST_MODE==='false' && process.env.OPENAI_API_KEY && process.env.DEMO_MODE!=='true';
+  if(!paid){
+    const wav=outFile+'.wav';
+    try{
+      await run('espeak-ng',['-v','fr','-s','165','-p','48','-w',wav,String(text).slice(0,2500)]);
+      await run('ffmpeg',['-y','-i',wav,'-af','loudnorm','-c:a','libmp3lame','-b:a','128k',outFile]);
+      try{fs.unlinkSync(wav)}catch{}
+      return outFile;
+    }catch(e){
+      try{fs.unlinkSync(wav)}catch{}
+      await run('ffmpeg',['-y','-f','lavfi','-i','anullsrc=r=44100:cl=mono','-t','12','-c:a','libmp3lame',outFile]);
+      return outFile;
+    }
+  }
+  const r=await fetch('https://api.openai.com/v1/audio/speech',{method:'POST',headers:{authorization:`Bearer ${process.env.OPENAI_API_KEY}`,'content-type':'application/json'},body:JSON.stringify({model:process.env.OPENAI_TTS_MODEL||'gpt-4o-mini-tts',voice:process.env.OPENAI_TTS_VOICE||'coral',input:text,format:'mp3'})});
+  if(!r.ok)throw new Error(`TTS ${r.status}: ${(await r.text()).slice(0,400)}`);
+  fs.writeFileSync(outFile,Buffer.from(await r.arrayBuffer()));
+  return outFile
+}
+export async function generateVisual({product,concept,outFile}){fs.mkdirSync(path.dirname(outFile),{recursive:true});if(process.env.ZERO_COST_MODE!=='false'||process.env.DEMO_MODE==='true'||!process.env.OPENAI_API_KEY)return null;const facts=[product?.name,product?.category,product?.notes].filter(Boolean).join(' — ');const prompt=`Create a clean vertical commercial-style background image for a short social video. Subject: ${facts||concept.title}. Show only details supported by the description. No text, no logos, no watermark, no people making endorsements. Modern realistic product-demo composition, neutral background, room for captions, vertical 1024x1536.`;const r=await fetch('https://api.openai.com/v1/images/generations',{method:'POST',headers:{authorization:`Bearer ${process.env.OPENAI_API_KEY}`,'content-type':'application/json'},body:JSON.stringify({model:process.env.OPENAI_IMAGE_MODEL||'gpt-image-2.5-flare',prompt,size:'1024x1536',quality:'medium',output_format:'jpeg'})});const d=await r.json();if(!r.ok)throw new Error(d?.error?.message||`Image OpenAI ${r.status}`);const b64=d?.data?.[0]?.b64_json;if(!b64)return null;fs.writeFileSync(outFile,Buffer.from(b64,'base64'));return outFile}
 function escDrawtext(s=''){return String(s).replace(/\\/g,'\\\\').replace(/:/g,'\\:').replace(/'/g,"\\'").replace(/%/g,'\\%').replace(/\n/g,' ')}
 function subtitleFilters(text,duration=18){const parts=String(text||'').split(/(?<=[.!?])\s+/).filter(Boolean).slice(0,6);if(!parts.length)return[];const slot=duration/parts.length;return parts.map((p,i)=>`drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='${escDrawtext(p.slice(0,115))}':fontcolor=white:fontsize=38:x=(w-text_w)/2:y=1380:box=1:boxcolor=black@0.62:boxborderw=18:enable='between(t,${(i*slot).toFixed(2)},${((i+1)*slot).toFixed(2)})'`)}
 export async function audioDuration(file){return new Promise((resolve)=>{const p=spawn('ffprobe',['-v','error','-show_entries','format=duration','-of','default=noprint_wrappers=1:nokey=1',file]);let s='';p.stdout.on('data',d=>s+=d);p.on('close',()=>resolve(Math.max(6,Math.min(60,Number(s)||18))));p.on('error',()=>resolve(18))})}
