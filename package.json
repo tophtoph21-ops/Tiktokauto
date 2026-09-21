@@ -1,0 +1,8 @@
+{
+  "name":"tiktok-autopilot-complete",
+  "version":"3.0.0",
+  "private":true,
+  "type":"module",
+  "engines":{"node":">=22.5"},
+  "scripts":{"start":"node --experimental-sqlite server.mjs","dev":"node --experimental-sqlite --watch server.mjs","check":"node --experimental-sqlite scripts/check.mjs"}
+}
