@@ -81,10 +81,58 @@ export async function synthesizeSpeech(text,outFile){
 }
 export async function generateVisual({product,concept,outFile}){fs.mkdirSync(path.dirname(outFile),{recursive:true});if(process.env.ZERO_COST_MODE!=='false'||process.env.DEMO_MODE==='true'||!process.env.OPENAI_API_KEY)return null;const facts=[product?.name,product?.category,product?.notes].filter(Boolean).join(' — ');const prompt=`Create a clean vertical commercial-style background image for a short social video. Subject: ${facts||concept.title}. Show only details supported by the description. No text, no logos, no watermark, no people making endorsements. Modern realistic product-demo composition, neutral background, room for captions, vertical 1024x1536.`;const r=await fetch('https://api.openai.com/v1/images/generations',{method:'POST',headers:{authorization:`Bearer ${process.env.OPENAI_API_KEY}`,'content-type':'application/json'},body:JSON.stringify({model:process.env.OPENAI_IMAGE_MODEL||'gpt-image-2.5-flare',prompt,size:'1024x1536',quality:'medium',output_format:'jpeg'})});const d=await r.json();if(!r.ok)throw new Error(d?.error?.message||`Image OpenAI ${r.status}`);const b64=d?.data?.[0]?.b64_json;if(!b64)return null;fs.writeFileSync(outFile,Buffer.from(b64,'base64'));return outFile}
 function escDrawtext(s=''){return String(s).replace(/\\/g,'\\\\').replace(/:/g,'\\:').replace(/'/g,"\\'").replace(/%/g,'\\%').replace(/\n/g,' ')}
-function subtitleFilters(text,duration=18){const parts=String(text||'').split(/(?<=[.!?])\s+/).filter(Boolean).slice(0,6);if(!parts.length)return[];const slot=duration/parts.length;return parts.map((p,i)=>`drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='${escDrawtext(p.slice(0,115))}':fontcolor=white:fontsize=38:x=(w-text_w)/2:y=1380:box=1:boxcolor=black@0.62:boxborderw=18:enable='between(t,${(i*slot).toFixed(2)},${((i+1)*slot).toFixed(2)})'`)}
+function subtitleFilters(text,duration=18){const parts=String(text||'').split(/(?<=[.!?])\s+/).filter(Boolean).slice(0,6);if(!parts.length)return[];const slot=duration/parts.length;return parts.map((p,i)=>`drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='${escDrawtext(p.slice(0,115))}':fontcolor=white:fontsize=26:x=(w-text_w)/2:y=920:box=1:boxcolor=black@0.62:boxborderw=18:enable='between(t,${(i*slot).toFixed(2)},${((i+1)*slot).toFixed(2)})'`)}
 export async function audioDuration(file){return new Promise((resolve)=>{const p=spawn('ffprobe',['-v','error','-show_entries','format=duration','-of','default=noprint_wrappers=1:nokey=1',file]);let s='';p.stdout.on('data',d=>s+=d);p.on('close',()=>resolve(Math.max(6,Math.min(60,Number(s)||18))));p.on('error',()=>resolve(18))})}
-export async function renderVerticalVideo({concept,audioFile,outFile,product,imageFile}){fs.mkdirSync(path.dirname(outFile),{recursive:true});const duration=await audioDuration(audioFile),hook=escDrawtext(concept.hook.slice(0,100)),name=escDrawtext((product?.name||concept.title).slice(0,72));const overlays=[`drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='${hook}':fontcolor=white:fontsize=60:x=(w-text_w)/2:y=170:box=1:boxcolor=black@0.62:boxborderw=24`,`drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='${name}':fontcolor=white:fontsize=42:x=(w-text_w)/2:y=1040:box=1:boxcolor=black@0.42:boxborderw=18`,...subtitleFilters(concept.script,duration)].join(',');let args;if(imageFile&&fs.existsSync(imageFile)){args=['-y','-loop','1','-i',imageFile,'-i',audioFile,'-vf',`scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,zoompan=z='min(zoom+0.0005,1.08)':d=1:s=1080x1920:fps=30,${overlays}`,'-map','0:v','-map','1:a','-c:v','libx264','-preset','veryfast','-pix_fmt','yuv420p','-c:a','aac','-b:a','128k','-t',String(duration),'-movflags','+faststart',outFile]}else{args=['-y','-f','lavfi','-i','color=c=0x16171c:s=1080x1920:r=30','-i',audioFile,'-vf',overlays,'-map','0:v','-map','1:a','-c:v','libx264','-preset','veryfast','-pix_fmt','yuv420p','-c:a','aac','-b:a','128k','-shortest','-movflags','+faststart',outFile]}await run('ffmpeg',args);return outFile}
-export function run(cmd,args){return new Promise((resolve,reject)=>{const p=spawn(cmd,args,{stdio:['ignore','pipe','pipe']});let err='';p.stderr.on('data',d=>err+=d.toString());p.on('error',reject);p.on('close',code=>code===0?resolve():reject(new Error(`${cmd} exited ${code}: ${err.slice(-1800)}`)))})}
+export async function renderVerticalVideo({concept,audioFile,outFile,product,imageFile}){
+  fs.mkdirSync(path.dirname(outFile),{recursive:true});
+  const duration=await audioDuration(audioFile);
+  const hook=escDrawtext(concept.hook.slice(0,90));
+  const name=escDrawtext((product?.name||concept.title).slice(0,60));
+  const overlays=[
+    `drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='${hook}':fontcolor=white:fontsize=38:x=(w-text_w)/2:y=110:box=1:boxcolor=black@0.62:boxborderw=16`,
+    `drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='${name}':fontcolor=white:fontsize=28:x=(w-text_w)/2:y=690:box=1:boxcolor=black@0.42:boxborderw=12`,
+    ...subtitleFilters(concept.script,duration)
+  ].join(',');
+
+  const common=[
+    '-map','0:v','-map','1:a',
+    '-c:v','libx264',
+    '-preset','ultrafast',
+    '-tune','stillimage',
+    '-threads','2',
+    '-pix_fmt','yuv420p',
+    '-r','24',
+    '-c:a','aac',
+    '-b:a','96k',
+    '-movflags','+faststart'
+  ];
+
+  let args;
+  if(imageFile&&fs.existsSync(imageFile)){
+    args=[
+      '-y',
+      '-loop','1','-framerate','24','-i',imageFile,
+      '-i',audioFile,
+      '-vf',`scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,${overlays}`,
+      ...common,
+      '-t',String(duration),
+      outFile
+    ];
+  }else{
+    args=[
+      '-y',
+      '-f','lavfi','-i','color=c=0x16171c:s=720x1280:r=24',
+      '-i',audioFile,
+      '-vf',overlays,
+      ...common,
+      '-shortest',
+      outFile
+    ];
+  }
+  await run('ffmpeg',args);
+  return outFile;
+}
+export function run(cmd,args){return new Promise((resolve,reject)=>{const p=spawn(cmd,args,{stdio:['ignore','pipe','pipe']});let err='';p.stderr.on('data',d=>err+=d.toString());p.on('error',reject);p.on('close',(code,signal)=>code===0?resolve():reject(new Error(`${cmd} stopped (code=${code}, signal=${signal||'none'}): ${err.slice(-1800)}`)))})}
 export async function commandExists(cmd){return new Promise(resolve=>{const p=spawn(cmd,['-version']);p.on('error',()=>resolve(false));p.on('close',c=>resolve(c===0))})}
 
 export async function tiktokExchangeCode(code){const form=new URLSearchParams({client_key:process.env.TIKTOK_CLIENT_KEY||'',client_secret:process.env.TIKTOK_CLIENT_SECRET||'',code,grant_type:'authorization_code',redirect_uri:process.env.TIKTOK_REDIRECT_URI||''}),r=await fetch('https://open.tiktokapis.com/v2/oauth/token/',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body:form}),d=await r.json();if(!r.ok||d.error)throw new Error(d.error_description||d.error||`TikTok OAuth ${r.status}`);return d}

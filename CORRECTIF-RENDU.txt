@@ -1,0 +1,15 @@
+CORRECTIF RENDU RAILWAY
+
+Remplace uniquement `lib.mjs` dans ton dépôt GitHub par celui de ce ZIP.
+
+Le correctif :
+- passe de 1080x1920 à 720x1280
+- passe de 30 fps à 24 fps
+- limite FFmpeg à 2 threads
+- utilise le preset ultrafast
+- supprime le zoom lourd sur les images
+- réduit le débit audio
+- affiche mieux la cause si Railway tue encore FFmpeg
+
+Après Commit changes, Railway redéploie automatiquement.
+Attends 1 à 3 minutes puis appuie de nouveau sur Rendre.
