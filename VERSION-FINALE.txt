@@ -1,0 +1,14 @@
+VERSION FINALE CONSOLIDÉE
+
+- interface mobile simplifiée
+- Produit / Viral 1 min+
+- Radar tendances quotidien
+- anti-répétition
+- contrôle qualité vidéo avant validation
+- erreurs compréhensibles
+- nettoyage automatique des vieux fichiers
+- automatique Mix / Viral / Produit
+- suppression vidéo
+- Agnes + moteur local de secours
+
+Mise à jour : remplace les fichiers du dépôt GitHub par ceux de ce ZIP. Garde le fichier .txt de vérification TikTok déjà présent dans ton dépôt.

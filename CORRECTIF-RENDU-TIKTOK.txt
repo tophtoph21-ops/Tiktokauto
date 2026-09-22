@@ -1,0 +1,15 @@
+CORRECTIF RENDU TIKTOK PROPRE
+
+Remplace uniquement `lib.mjs` dans ton dépôt GitHub.
+
+Améliorations :
+- texte dans les zones sûres
+- hook non coupé
+- sous-titres courts et lisibles
+- nom du produit repositionné
+- CTA final
+- image produit plein écran avec léger mouvement
+- fond propre quand aucune image produit
+- 720x1280 / 24 fps / 2 threads pour Railway
+
+Après Commit changes, attends le redéploiement puis génère une nouvelle vidéo.

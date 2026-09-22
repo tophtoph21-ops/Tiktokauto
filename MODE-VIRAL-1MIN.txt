@@ -1,0 +1,21 @@
+MODE VIRAL 1 MIN+
+
+Nouveau bouton sur l'accueil :
+- 🛍️ Produit
+- 🎬 Viral 1 min+
+
+En mode Viral :
+- aucun produit nécessaire
+- choix du style ou "Surprise-moi"
+- sujet facultatif
+- script d'environ 65 à 85 secondes
+- génération automatique de la vidéo
+- Agnes AI si disponible, moteur local sinon
+
+Styles :
+fait surprenant, mystère léger, quiz, mini-histoire, Top 5, science facile,
+psychologie, "Et si… ?"
+
+Pour mettre à jour l'app :
+remplace les fichiers du dépôt GitHub par ceux du ZIP.
+Garde le fichier .txt de vérification TikTok.

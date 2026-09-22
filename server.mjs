@@ -4,7 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
-import { loadEnv, uid, nowIso, json, bodyJson, encrypt, decrypt, generateConceptVariants, synthesizeSpeech, generateVisual, renderVerticalVideo, testOpenAI, commandExists, tiktokExchangeCode, tiktokRefresh, tiktokCreatorInfo, tiktokInitVideo, tiktokUploadVideo, tiktokPostStatus, tiktokQueryVideos } from './lib.mjs';
+import { loadEnv, uid, nowIso, json, bodyJson, encrypt, decrypt, generateConceptVariants, generateViralConcept, synthesizeSpeech, generateVisual, renderVerticalVideo, probeVideoQuality, testOpenAI, commandExists, tiktokExchangeCode, tiktokRefresh, tiktokCreatorInfo, tiktokInitVideo, tiktokUploadVideo, tiktokPostStatus, tiktokQueryVideos } from './lib.mjs';
 
 const ROOT=path.dirname(fileURLToPath(import.meta.url));
 loadEnv(path.join(ROOT,'.env'));
@@ -29,12 +29,32 @@ CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, type TEXT, message TEXT,
 function addColumn(t,d){try{db.exec(`ALTER TABLE ${t} ADD COLUMN ${d}`)}catch{}}
 for(const d of ['score REAL DEFAULT 0','total_views INTEGER DEFAULT 0','total_clicks INTEGER DEFAULT 0','total_orders INTEGER DEFAULT 0','total_revenue REAL DEFAULT 0','updated_at TEXT','image_path TEXT'])addColumn('products',d);
 for(const d of ['variant_group TEXT','variant_index INTEGER DEFAULT 0','hook_score REAL DEFAULT 0','approved_at TEXT','likes INTEGER DEFAULT 0','comments INTEGER DEFAULT 0','shares INTEGER DEFAULT 0','synced_at TEXT','image_path TEXT','optimized_at TEXT'])addColumn('contents',d);
+for(const d of ["content_mode TEXT DEFAULT 'product'","topic_signature TEXT","quality_status TEXT","quality_details TEXT","duration_seconds REAL DEFAULT 0"])addColumn('contents',d);
 const getSetting=(k,d='')=>db.prepare('SELECT v FROM settings WHERE k=?').get(k)?.v??d;
 const setSetting=(k,v)=>db.prepare('INSERT INTO settings(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v').run(k,String(v));
 const getSecret=k=>{const v=db.prepare('SELECT v FROM secrets WHERE k=?').get(k)?.v;return v?decrypt(v,APP_SECRET):''};
 const setSecret=(k,v)=>{if(v===undefined||v===null||v==='')return;db.prepare('INSERT INTO secrets(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v').run(k,encrypt(String(v),APP_SECRET));process.env[k]=String(v)};
 for(const k of ['AGNES_API_KEY','OPENAI_API_KEY','TIKTOK_CLIENT_KEY','TIKTOK_CLIENT_SECRET','TIKTOK_REDIRECT_URI','TIKTOK_SCOPES']){const v=getSecret(k);if(v)process.env[k]=v}
-const defaults={niche:'gadgets utiles',format:'probleme-solution',daily_count:'1',variants_per_product:'2',auto_render:'true',optimization_mode:'revenue',schedule_gap_minutes:'180',autopilot_enabled:'false',autopilot_hour:'10',min_views_to_optimize:'1000',auto_visuals:'false',demo_mode:'false',zero_cost_mode:'true',agnes_enabled:'true',agnes_video_enabled:'false'};
+
+db.exec(`
+CREATE TABLE IF NOT EXISTS trends(
+  id TEXT PRIMARY KEY,
+  label TEXT NOT NULL,
+  score REAL DEFAULT 0,
+  source TEXT DEFAULT 'creative_center',
+  region TEXT DEFAULT 'FR',
+  captured_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS trend_runs(
+  id TEXT PRIMARY KEY,
+  source TEXT,
+  status TEXT,
+  details TEXT,
+  created_at INTEGER NOT NULL
+);
+`);
+
+const defaults={niche:'gadgets utiles',format:'probleme-solution',daily_count:'1',variants_per_product:'2',auto_render:'true',optimization_mode:'revenue',schedule_gap_minutes:'180',autopilot_enabled:'false',autopilot_hour:'10',min_views_to_optimize:'1000',auto_visuals:'false',demo_mode:'false',zero_cost_mode:'true',agnes_enabled:'true',agnes_video_enabled:'false',trend_radar_enabled:'true',trend_region:'FR',trend_refresh_hour:'7',auto_content_mode:'mix',storage_days:'14',viral_target_seconds:'70'};
 for(const [k,v] of Object.entries(defaults))if(getSetting(k,'')==='')setSetting(k,v);
 const isDemo=()=>getSetting('demo_mode','false')==='true';
 const isZeroCost=()=>getSetting('zero_cost_mode','true')==='true';
@@ -50,13 +70,97 @@ async function accessToken(){let o=getOauth();if(!o)throw new Error('TikTok non 
 function recalcProductScores(){for(const r of db.prepare(`SELECT p.id,p.price,p.commission_rate,COALESCE(SUM(c.views),0) views,COALESCE(SUM(c.clicks),0) clicks,COALESCE(SUM(c.orders),0) orders,COALESCE(SUM(c.revenue),0) revenue FROM products p LEFT JOIN contents c ON c.product_id=p.id GROUP BY p.id`).all()){const ctr=r.views?100*r.clicks/r.views:0,conv=r.clicks?100*r.orders/r.clicks:0,rpm=r.views?1000*r.revenue/r.views:0,commission=Number(r.price||0)*Number(r.commission_rate||0)/100,confidence=Math.min(1,Number(r.views||0)/10000);let score=getSetting('optimization_mode')==='conversion'?conv*5+ctr+commission*.1:rpm*.55+conv*2+ctr*.5+commission*.15;score*=.35+.65*confidence;db.prepare('UPDATE products SET score=?,total_views=?,total_clicks=?,total_orders=?,total_revenue=?,updated_at=? WHERE id=?').run(Number(score.toFixed(3)),r.views,r.clicks,r.orders,r.revenue,nowIso(),r.id)}}
 function rankedProducts(limit=20){recalcProductScores();return db.prepare('SELECT * FROM products WHERE active=1 ORDER BY score DESC,commission_rate DESC,price DESC LIMIT ?').all(limit)}
 function dashboard(){recalcProductScores();const t=db.prepare('SELECT COUNT(*) contents,COALESCE(SUM(views),0) views,COALESCE(SUM(clicks),0) clicks,COALESCE(SUM(orders),0) orders,COALESCE(SUM(revenue),0) revenue FROM contents').get(),ready=db.prepare("SELECT COUNT(*) n FROM contents WHERE status IN ('READY','SCHEDULED')").get().n,published=db.prepare("SELECT COUNT(*) n FROM contents WHERE status='PUBLISHED'").get().n;return {...t,ready,published,rpm:t.views?Number((1000*t.revenue/t.views).toFixed(2)):0,conversion:t.clicks?Number((100*t.orders/t.clicks).toFixed(2)):0}}
-async function makeVariants(productId,count){const p=product(productId),group=uid(),niche=getSetting('niche'),format=getSetting('format'),concepts=await generateConceptVariants({product:p,niche,format,count}),out=[];for(let i=0;i<concepts.length;i++){const x=concepts[i],id=uid();db.prepare(`INSERT INTO contents(id,product_id,status,niche,format,title,hook,script,caption,cta,visual_beats,variant_group,variant_index,hook_score,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id,p?.id||null,'SCRIPTED',niche,format,x.title,x.hook,x.script,x.caption,x.cta,JSON.stringify(x.visual_beats||[]),group,i,Number(x.hook_score||0),nowIso(),nowIso());out.push(content(id))}db.prepare('INSERT INTO experiments(id,product_id,variant_count,created_at) VALUES(?,?,?,?)').run(group,p?.id||null,out.length,nowIso());return out}
-async function renderOne(id){const c=content(id);if(!c)throw new Error('Contenu introuvable');const p=product(c.product_id),audio=path.join(ROOT,'storage','audio',`${id}.${isDemo()?'m4a':'mp3'}`),video=path.join(ROOT,'storage','videos',`${id}.mp4`),image=path.join(ROOT,'storage','images',`${id}.jpg`);db.prepare('UPDATE contents SET status=?,error=NULL,updated_at=? WHERE id=?').run('RENDERING',nowIso(),id);try{process.env.DEMO_MODE=String(isDemo());process.env.ZERO_COST_MODE=String(isZeroCost());process.env.AGNES_ENABLED=String(getSetting('agnes_enabled','true')==='true');await synthesizeSpeech(`${c.hook}. ${c.script} ${c.cta}`,audio);let imageFile=p?.image_path&&fs.existsSync(p.image_path)?p.image_path:null;if(!imageFile&&getSetting('auto_visuals')==='true'&&!isDemo()&&!isZeroCost()){try{imageFile=await generateVisual({product:p,concept:c,outFile:image})}catch(e){log('visual_error',e.message)}}await renderVerticalVideo({concept:c,audioFile:audio,outFile:video,product:p,imageFile});db.prepare('UPDATE contents SET status=?,audio_path=?,video_path=?,image_path=?,updated_at=? WHERE id=?').run('READY',audio,video,imageFile||null,nowIso(),id)}catch(e){db.prepare('UPDATE contents SET status=?,error=?,updated_at=? WHERE id=?').run('ERROR',String(e.message||e),nowIso(),id);throw e}return content(id)}
+async function makeVariants(productId,count){const p=product(productId),group=uid(),niche=getSetting('niche'),format=getSetting('format'),concepts=await generateConceptVariants({product:p,niche,format,count}),out=[];for(let i=0;i<concepts.length;i++){const x=concepts[i],id=uid();db.prepare(`INSERT INTO contents(id,product_id,status,niche,format,title,hook,script,caption,cta,visual_beats,variant_group,variant_index,hook_score,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id,p?.id||null,'SCRIPTED',niche,format,x.title,x.hook,x.script,x.caption,x.cta,JSON.stringify(x.visual_beats||[]),group,i,Number(x.hook_score||0),nowIso(),nowIso());db.prepare("UPDATE contents SET content_mode='product' WHERE id=?").run(id);out.push(content(id))}db.prepare('INSERT INTO experiments(id,product_id,variant_count,created_at) VALUES(?,?,?,?)').run(group,p?.id||null,out.length,nowIso());return out}
+
+function friendlyError(err){const s=String(err?.message||err||'Erreur inconnue');if(/429|rate.?limit|quota/i.test(s))return 'Le service IA est temporairement limité. Réessaie dans quelques minutes.';if(/fetch|ENOTFOUND|ECONN|network/i.test(s))return 'Connexion au service impossible pour le moment.';if(/ffmpeg|signal.?9|killed|137/i.test(s))return 'Le serveur manque de ressources pour créer cette vidéo. Réessaie avec un seul rendu.';if(/TikTok non connecté/i.test(s))return 'TikTok doit être reconnecté dans ⚙️ Réglages.';return s.slice(0,280)}
+function topicSignature(s=''){return String(s).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9 ]+/g,' ').replace(/\s+/g,' ').trim().slice(0,120)}
+function recentTopics(limit=30){return db.prepare("SELECT title,hook,topic_signature FROM contents WHERE content_mode='viral' ORDER BY created_at DESC LIMIT ?").all(limit).map(x=>x.topic_signature||topicSignature(`${x.title||''} ${x.hook||''}`)).filter(Boolean)}
+function cleanupStorage(){const days=Math.max(3,Number(getSetting('storage_days','14')||14)),cutoff=Date.now()-days*86400000,refs=new Set();for(const r of db.prepare('SELECT video_path,audio_path,image_path FROM contents').all())for(const p of [r.video_path,r.audio_path,r.image_path])if(p)refs.add(path.resolve(p));let removed=0;for(const dir of ['audio','videos','images']){const d=path.join(ROOT,'storage',dir);if(!fs.existsSync(d))continue;for(const name of fs.readdirSync(d)){const p=path.join(d,name);try{const st=fs.statSync(p);if(st.isFile()&&st.mtimeMs<cutoff&&!refs.has(path.resolve(p))){fs.unlinkSync(p);removed++}}catch{}}}return removed}
+async function renderOne(id){const c=content(id);if(!c)throw new Error('Contenu introuvable');const p=product(c.product_id),audio=path.join(ROOT,'storage','audio',`${id}.${isDemo()?'m4a':'mp3'}`),video=path.join(ROOT,'storage','videos',`${id}.mp4`),image=path.join(ROOT,'storage','images',`${id}.jpg`);db.prepare('UPDATE contents SET status=?,error=NULL,quality_status=?,updated_at=? WHERE id=?').run('RENDERING','CHECKING',nowIso(),id);try{process.env.DEMO_MODE=String(isDemo());process.env.ZERO_COST_MODE=String(isZeroCost());process.env.AGNES_ENABLED=String(getSetting('agnes_enabled','true')==='true');await synthesizeSpeech(`${c.hook}. ${c.script} ${c.cta}`,audio);let imageFile=p?.image_path&&fs.existsSync(p.image_path)?p.image_path:null;if(!imageFile&&getSetting('auto_visuals')==='true'&&!isDemo()&&!isZeroCost())try{imageFile=await generateVisual({product:p,concept:c,outFile:image})}catch(e){log('visual_error',friendlyError(e))}await renderVerticalVideo({concept:c,audioFile:audio,outFile:video,product:p,imageFile});const q=await probeVideoQuality(video,{minSeconds:c.content_mode==='viral'?55:3});if(!q.ok)throw new Error(`Contrôle qualité: ${q.reason}`);db.prepare('UPDATE contents SET status=?,audio_path=?,video_path=?,image_path=?,quality_status=?,quality_details=?,duration_seconds=?,updated_at=? WHERE id=?').run('READY',audio,video,imageFile||null,'PASS',JSON.stringify(q),Number(q.duration||0),nowIso(),id)}catch(e){const msg=friendlyError(e);db.prepare('UPDATE contents SET status=?,error=?,quality_status=?,quality_details=?,updated_at=? WHERE id=?').run('ERROR',msg,'FAIL',String(e.message||e).slice(0,1200),nowIso(),id);throw new Error(msg)}return content(id)}
 async function publishOne(id,privacyLevel){const c=content(id);if(!c?.video_path)throw new Error('Vidéo non rendue');if(!c.approved_at)throw new Error('Validation utilisateur requise avant publication');if(isDemo()){db.prepare('UPDATE contents SET status=?,tiktok_status=?,publish_id=?,privacy_level=?,post_id=?,updated_at=? WHERE id=?').run('PUBLISHED','DEMO_PUBLISHED','demo_'+uid(),privacyLevel||'SELF_ONLY','demo_post_'+uid(),nowIso(),id);return content(id)}const token=await accessToken(),info=await tiktokCreatorInfo(token),privacy=info.privacy_level_options?.includes(privacyLevel)?privacyLevel:'SELF_ONLY',size=fs.statSync(c.video_path).size,init=await tiktokInitVideo(token,{fileSize:size,title:c.caption,privacyLevel:privacy,disableComment:info.comment_disabled,disableDuet:info.duet_disabled,disableStitch:info.stitch_disabled});await tiktokUploadVideo(init.upload_url,c.video_path);db.prepare('UPDATE contents SET status=?,publish_id=?,privacy_level=?,tiktok_status=?,updated_at=? WHERE id=?').run('SUBMITTED',init.publish_id,privacy,'PROCESSING',nowIso(),id);return content(id)}
 async function refreshStatuses(){if(isDemo())return;const rows=db.prepare("SELECT id,publish_id FROM contents WHERE publish_id IS NOT NULL AND status IN ('SUBMITTED','PROCESSING')").all();if(!rows.length)return;let token;try{token=await accessToken()}catch{return}for(const r of rows){try{const s=await tiktokPostStatus(token,r.publish_id),st=s.status||'PROCESSING',postId=s.publicaly_available_post_id?.[0]||s.publicly_available_post_id?.[0]||null;db.prepare('UPDATE contents SET tiktok_status=?,post_id=COALESCE(?,post_id),status=?,error=?,updated_at=? WHERE id=?').run(st,postId,st==='PUBLISH_COMPLETE'?'PUBLISHED':st==='FAILED'?'ERROR':'PROCESSING',s.fail_reason||null,nowIso(),r.id)}catch{}}}
 async function syncMetrics(){if(isDemo())return {updated:0};const all=db.prepare("SELECT id,post_id FROM contents WHERE post_id IS NOT NULL AND status='PUBLISHED' AND post_id NOT LIKE 'demo_%'").all();if(!all.length)return{updated:0};const token=await accessToken();let updated=0;for(let i=0;i<all.length;i+=20){const rows=all.slice(i,i+20),data=await tiktokQueryVideos(token,rows.map(x=>x.post_id));for(const v of data.videos||[]){const r=rows.find(x=>String(x.post_id)===String(v.id));if(!r)continue;db.prepare('UPDATE contents SET views=?,likes=?,comments=?,shares=?,synced_at=?,updated_at=? WHERE id=?').run(v.view_count||0,v.like_count||0,v.comment_count||0,v.share_count||0,nowIso(),nowIso(),r.id);updated++}}recalcProductScores();return{updated}}
 async function optimize(){const min=Number(getSetting('min_views_to_optimize','1000')),rows=db.prepare("SELECT * FROM contents WHERE status='PUBLISHED' AND optimized_at IS NULL AND views>=? ORDER BY revenue*1000.0/CASE WHEN views=0 THEN 1 ELSE views END DESC LIMIT 3").all(min);let created=0;for(const r of rows){const rpm=r.views?1000*r.revenue/r.views:0;if(rpm>0||r.orders>0){const v=await makeVariants(r.product_id,Math.min(3,Number(getSetting('variants_per_product'))));created+=v.length;db.prepare('UPDATE contents SET optimized_at=? WHERE id=?').run(nowIso(),r.id)}}return{created}}
 async function runAutopilot(count){const target=Math.max(1,Math.min(12,Number(count||getSetting('daily_count')))),variants=Math.max(1,Math.min(5,Number(getSetting('variants_per_product')))),candidates=rankedProducts(target),out=[];if(!candidates.length)out.push(...await makeVariants(null,variants));else for(const p of candidates.slice(0,target))out.push(...await makeVariants(p.id,variants));if(getSetting('auto_render')==='true')for(const c of out)try{await renderOne(c.id)}catch(e){log('render_error',e.message)}return out}
+
+
+function normalizeTrendLabel(s){
+  return String(s||'').replace(/^#/,'').replace(/\\u0026/g,'&').trim().slice(0,80);
+}
+function saveTrend(label,score=50,source='creative_center',region='FR'){
+  label=normalizeTrendLabel(label);
+  if(!label||label.length<2)return;
+  const id=label.toLowerCase().replace(/[^a-z0-9à-ÿ]+/gi,'-').replace(/^-|-$/g,'').slice(0,70)||uid();
+  db.prepare(`INSERT INTO trends(id,label,score,source,region,captured_at)
+    VALUES(?,?,?,?,?,?)
+    ON CONFLICT(id) DO UPDATE SET score=excluded.score,source=excluded.source,region=excluded.region,captured_at=excluded.captured_at`)
+    .run(id,label,Number(score)||50,source,region,Date.now());
+}
+function topTrends(limit=20){
+  return db.prepare(`SELECT * FROM trends WHERE captured_at>? ORDER BY score DESC,captured_at DESC LIMIT ?`)
+    .all(Date.now()-7*86400000,Math.max(1,Math.min(100,Number(limit)||20)));
+}
+function trendWordsFromHtml(html){
+  const found=new Map();
+  const patterns=[
+    /"hashtagName"\s*:\s*"([^"]{2,80})"/g,
+    /"hashtag_name"\s*:\s*"([^"]{2,80})"/g,
+    /"name"\s*:\s*"#([^"]{2,80})"/g,
+    /#([A-Za-zÀ-ÿ0-9_]{3,50})/g
+  ];
+  for(const rx of patterns){
+    let m;
+    while((m=rx.exec(html))&&found.size<80){
+      const v=normalizeTrendLabel(m[1]);
+      if(v && !/^(tiktok|fyp|foryou|viral)$/i.test(v)) found.set(v,(found.get(v)||0)+1);
+    }
+  }
+  return [...found.entries()].map(([label,hits],i)=>({label,score:90-i+Math.min(8,hits)})).slice(0,35);
+}
+async function refreshTrendRadar({force=false}={}){
+  if(getSetting('trend_radar_enabled','true')!=='true')return {ok:false,disabled:true};
+  const last=Number(getSetting('trend_last_refresh','0')||0);
+  if(!force && Date.now()-last<20*3600000)return {ok:true,cached:true,trends:topTrends(20)};
+  const region=getSetting('trend_region','FR');
+  const urls=[
+    'https://ads.tiktok.com/business/creativecenter/inspiration/popular/hashtag/pc/en',
+    'https://ads.tiktok.com/business/creativecenter/inspiration/popular/hashtag/mobile/en'
+  ];
+  let imported=0,lastErr='';
+  for(const url of urls){
+    try{
+      const r=await fetch(url,{headers:{'user-agent':'Mozilla/5.0 AutoContentStudio/1.0','accept-language':'fr-FR,fr;q=0.9,en;q=0.8'}});
+      if(!r.ok){lastErr=`HTTP ${r.status}`;continue}
+      const html=await r.text();
+      const list=trendWordsFromHtml(html);
+      for(const t of list){saveTrend(t.label,t.score,'creative_center',region);imported++}
+      if(imported)break;
+    }catch(e){lastErr=String(e.message||e)}
+  }
+  // Always blend in what performs on this account.
+  try{
+    const winners=db.prepare(`SELECT title,caption,hook,views,likes,shares,comments FROM contents
+      WHERE views>=100 ORDER BY (views + likes*4 + shares*12 + comments*6) DESC LIMIT 20`).all();
+    for(const c of winners){
+      const txt=`${c.title||''} ${c.caption||''} ${c.hook||''}`;
+      const tags=[...txt.matchAll(/#([A-Za-zÀ-ÿ0-9_]{3,50})/g)].map(m=>m[1]);
+      for(const tag of tags)saveTrend(tag,70+(Number(c.shares||0)*2),'own_account',region);
+    }
+  }catch{}
+  if(!imported){
+    const fallback=['quiz','curiosité','histoire courte','mystère','top 5','avant après','satisfaisant','et si','psychologie','science'];
+    fallback.forEach((x,i)=>saveTrend(x,55-i,'fallback',region));
+  }
+  setSetting('trend_last_refresh',String(Date.now()));
+  db.prepare('INSERT INTO trend_runs(id,source,status,details,created_at) VALUES(?,?,?,?,?)')
+    .run(uid(),'creative_center',imported?'ok':'fallback',imported?`${imported} tendances`:lastErr||'aucune donnée',Date.now());
+  return {ok:true,imported,source:imported?'creative_center':'fallback',trends:topTrends(20)};
+}
+function scoredTrends(limit=20){const now=Date.now();return topTrends(80).map(t=>{const age=Math.max(0,(now-Number(t.captured_at||now))/3600000),fresh=Math.max(0,30-age*.7),own=t.source==='own_account'?28:0;return{...t,final_score:Number((Number(t.score||0)+fresh+own).toFixed(1))}}).sort((a,b)=>b.final_score-a.final_score).slice(0,limit)}
+function trendContext(limit=8){return scoredTrends(limit).map(x=>x.label)}
+
+async function makeViralContent(style='random',topic=''){process.env.AGNES_ENABLED=String(getSetting('agnes_enabled','true')==='true');const trends=trendContext(10),avoid=recentTopics(30),autoTopic=topic||trends.slice(0,5).join(', '),concept=await generateViralConcept({style,topic:autoTopic,trends,avoid}),sig=topicSignature(`${concept.topic||''} ${concept.title||''} ${concept.hook||''}`),id=uid(),stamp=nowIso();db.prepare(`INSERT INTO contents(id,product_id,title,hook,hook_score,script,caption,cta,status,created_at,updated_at,variant_index,content_mode,topic_signature) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id,null,concept.title,concept.hook,concept.hook_score||80,concept.script,concept.caption,concept.cta,'SCRIPTED',stamp,stamp,0,'viral',sig);const c=content(id);setTimeout(async()=>{try{await renderOne(id);log('viral_render_done',`Vidéo virale ${id} créée`)}catch(e){log('viral_render_error',friendlyError(e))}},50);return c}
+
 async function runManualGenerate(count){
   const target=Math.max(1,Math.min(3,Number(count||1)));
   const variants=1;
@@ -79,16 +183,17 @@ async function runManualGenerate(count){
   return out;
 }
 
-async function schedulerTick(){try{await refreshStatuses();const now=new Date(),today=now.toISOString().slice(0,10);if(getSetting('autopilot_enabled')==='true'&&now.getHours()>=Number(getSetting('autopilot_hour','10'))&&getSetting('last_autopilot_date')!==today){await runAutopilot();setSetting('last_autopilot_date',today);log('autopilot','Génération quotidienne terminée')}const due=db.prepare("SELECT id,privacy_level FROM contents WHERE status IN ('READY','SCHEDULED') AND approved_at IS NOT NULL AND scheduled_at IS NOT NULL AND scheduled_at<=? LIMIT 1").all(now.toISOString());for(const r of due)try{await publishOne(r.id,r.privacy_level)}catch(e){db.prepare('UPDATE contents SET error=?,updated_at=? WHERE id=?').run(String(e.message||e),nowIso(),r.id)}await optimize()}catch(e){log('scheduler_error',e.message)}}
+async function schedulerTick(){try{await refreshTrendRadar({force:false})}catch(e){log('trend_refresh_error',friendlyError(e))}try{await refreshStatuses();const now=new Date(),today=now.toISOString().slice(0,10);if(getSetting('autopilot_enabled')==='true'&&now.getHours()>=Number(getSetting('autopilot_hour','10'))&&getSetting('last_autopilot_date')!==today){const mode=getSetting('auto_content_mode','mix'),hasProducts=Number(db.prepare('SELECT COUNT(*) n FROM products WHERE active=1').get().n)>0;if(mode==='viral'||(mode==='mix'&&(!hasProducts||Number(today.slice(-2))%2)))await makeViralContent('random','');else await runAutopilot(1);setSetting('last_autopilot_date',today);log('autopilot',`Création quotidienne ${mode} lancée`)}const due=db.prepare("SELECT id,privacy_level FROM contents WHERE status IN ('READY','SCHEDULED') AND approved_at IS NOT NULL AND scheduled_at IS NOT NULL AND scheduled_at<=? LIMIT 1").all(now.toISOString());for(const r of due)try{await publishOne(r.id,r.privacy_level)}catch(e){db.prepare('UPDATE contents SET error=?,updated_at=? WHERE id=?').run(friendlyError(e),nowIso(),r.id)}await optimize();if(getSetting('last_cleanup_date')!==today){const n=cleanupStorage();setSetting('last_cleanup_date',today);if(n)log('cleanup',`${n} anciens fichiers supprimés`)}}catch(e){log('scheduler_error',friendlyError(e))}}
 function decodeImage(data,id){if(!data)return null;const m=String(data).match(/^data:image\/(png|jpeg|jpg|webp);base64,(.+)$/);if(!m)throw new Error('Image invalide');const ext=m[1]==='jpeg'?'jpg':m[1],file=path.join(ROOT,'storage','images',`product-${id}.${ext}`);fs.writeFileSync(file,Buffer.from(m[2],'base64'));return file}
 function parseCsv(text){const lines=String(text||'').split(/\r?\n/).filter(Boolean);if(!lines.length)return[];const sep=lines[0].includes(';')?';':',';const headers=lines[0].split(sep).map(x=>x.trim().toLowerCase());return lines.slice(1).map(line=>{const cells=line.split(sep).map(x=>x.trim());return Object.fromEntries(headers.map((h,i)=>[h,cells[i]??'']))})}
 function setupStatus(){return{openai:!!process.env.OPENAI_API_KEY,agnes:!!process.env.AGNES_API_KEY,agnesEnabled:getSetting('agnes_enabled','true')==='true',agnesVideoEnabled:getSetting('agnes_video_enabled','false')==='true',zeroCost:isZeroCost(),tiktokApp:!!(process.env.TIKTOK_CLIENT_KEY&&process.env.TIKTOK_CLIENT_SECRET&&process.env.TIKTOK_REDIRECT_URI),ffmpeg:null,demo:isDemo(),redirectUri:process.env.TIKTOK_REDIRECT_URI||`http://localhost:${PORT}/oauth/tiktok/callback`,scopes:process.env.TIKTOK_SCOPES||'user.info.basic,video.publish,video.list'}}
 
 const server=http.createServer(async(req,res)=>{const url=new URL(req.url,`http://${req.headers.host}`),p=url.pathname;try{
 if(p.startsWith('/storage/')){if(serveStorage(res,p))return}
-if(p==='/api/state'&&req.method==='GET'){const o=db.prepare('SELECT open_id,scopes,expires_at,updated_at FROM oauth WHERE provider=?').get('tiktok');return json(res,200,{settings:Object.fromEntries(Object.keys(defaults).map(k=>[k,['daily_count','variants_per_product','schedule_gap_minutes','autopilot_hour','min_views_to_optimize'].includes(k)?Number(getSetting(k)):['auto_render','autopilot_enabled','auto_visuals','zero_cost_mode','agnes_enabled','agnes_video_enabled'].includes(k)?getSetting(k)==='true':getSetting(k)])),products:rankedProducts(100).map(x=>({...x,image_url:publicPath(x.image_path)})),contents:db.prepare('SELECT id FROM contents ORDER BY created_at DESC LIMIT 200').all().map(x=>content(x.id)),dashboard:dashboard(),tiktok:o?{connected:true,...o}:{connected:false},setup:setupStatus(),events:db.prepare('SELECT * FROM events ORDER BY created_at DESC LIMIT 12').all()})}
+if(p==='/api/health/final'&&req.method==='GET'){const ffmpeg=await commandExists('ffmpeg'),ffprobe=await commandExists('ffprobe');return json(res,200,{ok:ffmpeg&&ffprobe,ffmpeg,ffprobe,agnes:!!process.env.AGNES_API_KEY,tiktok:!!getOauth(),trends:scoredTrends(5)})}
+if(p==='/api/state'&&req.method==='GET'){const o=db.prepare('SELECT open_id,scopes,expires_at,updated_at FROM oauth WHERE provider=?').get('tiktok');return json(res,200,{settings:Object.fromEntries(Object.keys(defaults).map(k=>[k,['daily_count','variants_per_product','schedule_gap_minutes','autopilot_hour','min_views_to_optimize','storage_days','viral_target_seconds'].includes(k)?Number(getSetting(k)):['auto_render','autopilot_enabled','auto_visuals','zero_cost_mode','agnes_enabled','agnes_video_enabled','trend_radar_enabled'].includes(k)?getSetting(k)==='true':getSetting(k)])),products:rankedProducts(100).map(x=>({...x,image_url:publicPath(x.image_path)})),contents:db.prepare('SELECT id FROM contents ORDER BY created_at DESC LIMIT 200').all().map(x=>content(x.id)),dashboard:dashboard(),tiktok:o?{connected:true,...o}:{connected:false},setup:setupStatus(),events:db.prepare('SELECT * FROM events ORDER BY created_at DESC LIMIT 12').all()})}
 if(p==='/api/settings'&&req.method==='POST'){const b=await bodyJson(req);for(const k of Object.keys(defaults))if(k in b)setSetting(k,b[k]);return json(res,200,{ok:true})}
-if(p==='/api/setup'&&req.method==='POST'){const b=await bodyJson(req);for(const k of ['AGNES_API_KEY','OPENAI_API_KEY','TIKTOK_CLIENT_KEY','TIKTOK_CLIENT_SECRET','TIKTOK_REDIRECT_URI','TIKTOK_SCOPES'])if(b[k])setSecret(k,b[k]);if('demo_mode'in b)setSetting('demo_mode',!!b.demo_mode);if('zero_cost_mode'in b)setSetting('zero_cost_mode',!!b.zero_cost_mode);if('agnes_enabled'in b)setSetting('agnes_enabled',!!b.agnes_enabled);if('agnes_video_enabled'in b)setSetting('agnes_video_enabled',!!b.agnes_video_enabled);return json(res,200,{ok:true,status:setupStatus()})}
+if(p==='/api/setup'&&req.method==='POST'){const b=await bodyJson(req);for(const k of ['AGNES_API_KEY','OPENAI_API_KEY','TIKTOK_CLIENT_KEY','TIKTOK_CLIENT_SECRET','TIKTOK_REDIRECT_URI','TIKTOK_SCOPES'])if(b[k])setSecret(k,b[k]);if('demo_mode'in b)setSetting('demo_mode',!!b.demo_mode);if('zero_cost_mode'in b)setSetting('zero_cost_mode',!!b.zero_cost_mode);if('agnes_enabled'in b)setSetting('agnes_enabled',!!b.agnes_enabled);if('agnes_video_enabled'in b)setSetting('agnes_video_enabled',!!b.agnes_video_enabled);if('trend_radar_enabled'in b)setSetting('trend_radar_enabled',!!b.trend_radar_enabled);if('trend_region'in b)setSetting('trend_region',String(b.trend_region||'FR'));if('trend_refresh_hour'in b)setSetting('trend_refresh_hour',String(b.trend_refresh_hour||'7'));return json(res,200,{ok:true,status:setupStatus()})}
 if(p==='/api/agnes/test'&&req.method==='POST'){
   if(!process.env.AGNES_API_KEY)return json(res,400,{ok:false,error:'Clé Agnes manquante. Enregistre d’abord ta clé Agnes.'});
   try{
@@ -115,6 +220,18 @@ if(p==='/api/setup/test'&&req.method==='POST'){const ffmpeg=await commandExists(
 if(p==='/api/products'&&req.method==='POST'){const b=await bodyJson(req),id=uid(),img=decodeImage(b.image_data,id);db.prepare('INSERT INTO products(id,name,category,price,commission_rate,affiliate_url,notes,image_path,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)').run(id,b.name,b.category||'',Number(b.price||0),Number(b.commission_rate||0),b.affiliate_url||'',b.notes||'',img,nowIso(),nowIso());return json(res,201,{product:product(id)})}
 if(p==='/api/products/import'&&req.method==='POST'){const b=await bodyJson(req),rows=parseCsv(b.csv);let n=0;for(const r of rows){const name=r.name||r.nom||r.produit;if(!name)continue;db.prepare('INSERT INTO products(id,name,category,price,commission_rate,affiliate_url,notes,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)').run(uid(),name,r.category||r.categorie||'',Number(r.price||r.prix||0),Number(r.commission_rate||r.commission||0),r.affiliate_url||r.lien||'',r.notes||r.description||'',nowIso(),nowIso());n++}return json(res,200,{imported:n})}
 if(p.startsWith('/api/products/')&&req.method==='DELETE'){db.prepare('DELETE FROM products WHERE id=?').run(p.split('/').pop());return json(res,200,{ok:true})}
+if(p==='/api/trends'&&req.method==='GET'){
+  return json(res,200,{ok:true,lastRefresh:Number(getSetting('trend_last_refresh','0')||0),region:getSetting('trend_region','FR'),trends:scoredTrends(30)});
+}
+if(p==='/api/trends/refresh'&&req.method==='POST'){
+  try{return json(res,200,await refreshTrendRadar({force:true}))}
+  catch(e){return json(res,500,{ok:false,error:String(e.message||e)})}
+}
+if(p==='/api/viral/generate'&&req.method==='POST'){
+  const b=await bodyJson(req);
+  const item=await makeViralContent(b.style||'random',b.topic||'');
+  return json(res,202,{ok:true,contents:[item],message:'Vidéo virale en création'});
+}
 if(p==='/api/autopilot/run'&&req.method==='POST'){const b=await bodyJson(req);const contents=await runManualGenerate(b.count||1);return json(res,202,{ok:true,contents,message:'Création lancée'})}
 
 if(/^\/api\/contents\/[^/]+$/.test(p)&&req.method==='DELETE'){
@@ -140,6 +257,6 @@ if(p==='/oauth/tiktok/start'&&req.method==='GET'){if(!process.env.TIKTOK_CLIENT_
 if(p==='/oauth/tiktok/callback'&&req.method==='GET'){const code=url.searchParams.get('code'),state=url.searchParams.get('state'),row=state&&db.prepare('SELECT * FROM oauth_state WHERE state=?').get(state);if(!code||!row||Date.now()-row.created_at>600000)return json(res,400,{error:'OAuth TikTok invalide ou expiré'});db.prepare('DELETE FROM oauth_state WHERE state=?').run(state);saveOauth(await tiktokExchangeCode(code));res.writeHead(302,{location:'/'});return res.end()}
 if(p==='/api/tiktok/disconnect'&&req.method==='POST'){db.prepare('DELETE FROM oauth WHERE provider=?').run('tiktok');return json(res,200,{ok:true})}
 if(staticFile(res,p))return;return json(res,404,{error:'Introuvable'});
-}catch(e){console.error(e);log('error',e.message||e);return json(res,500,{error:String(e.message||e)})}});
+}catch(e){console.error(e);log('error',e.message||e);return json(res,500,{error:friendlyError(e)})}});
 setInterval(schedulerTick,60000);setTimeout(schedulerTick,1500);
 server.listen(PORT,()=>console.log(`TikTok Autopilot COMPLETE → http://localhost:${PORT}`));

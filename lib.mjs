@@ -170,6 +170,17 @@ function freeConcept(product,niche,format,i=0){
 }
 function demoConcept(product,niche,format,i=0){return freeConcept(product,niche,format,i)}
 async function openaiJson(prompt){const r=await fetch('https://api.openai.com/v1/responses',{method:'POST',headers:{authorization:`Bearer ${process.env.OPENAI_API_KEY}`,'content-type':'application/json'},body:JSON.stringify({model:process.env.OPENAI_TEXT_MODEL||'gpt-5.6-luna',input:prompt,text:{format:{type:'json_object'}}})});const d=await r.json();if(!r.ok)throw new Error(d?.error?.message||`OpenAI ${r.status}`);const text=d.output_text||d.output?.flatMap(x=>x.content||[]).find(x=>x.type==='output_text')?.text;if(!text)throw new Error('OpenAI n’a retourné aucun JSON');return JSON.parse(text)}
+
+export async function probeVideoQuality(file,{minSeconds=1}={}){
+  if(!file||!fs.existsSync(file))return{ok:false,reason:'Fichier vidéo absent'};
+  const size=fs.statSync(file).size;if(size<50000)return{ok:false,reason:'Fichier vidéo trop petit',size};
+  const out=await runCapture('ffprobe',['-v','error','-show_entries','format=duration:stream=codec_type,width,height','-of','json',file]);
+  const d=JSON.parse(out||'{}'),streams=d?.streams||[],v=streams.find(x=>x.codec_type==='video')||{};
+  const duration=Number(d?.format?.duration||0),hasVideo=streams.some(x=>x.codec_type==='video'),hasAudio=streams.some(x=>x.codec_type==='audio');
+  const ok=hasVideo&&hasAudio&&duration>=minSeconds&&Number(v.width)>=540&&Number(v.height)>=960;
+  return{ok,duration,size,hasVideo,hasAudio,width:Number(v.width||0),height:Number(v.height||0),reason:ok?'OK':!hasVideo?'Pas de piste vidéo':!hasAudio?'Pas de piste audio':duration<minSeconds?'Vidéo trop courte':'Résolution invalide'}
+}
+async function runCapture(cmd,args){return await new Promise((resolve,reject)=>{const p=spawn(cmd,args,{stdio:['ignore','pipe','pipe']});let out='',err='';p.stdout.on('data',d=>out+=d);p.stderr.on('data',d=>err+=d);p.on('error',reject);p.on('close',(code,signal)=>code===0?resolve(out):reject(new Error(`${cmd} code=${code} signal=${signal||'none'} ${err.slice(-900)}`)))})}
 export async function testOpenAI(){if(!process.env.OPENAI_API_KEY)throw new Error('Clé OpenAI absente');const r=await fetch('https://api.openai.com/v1/models',{headers:{authorization:`Bearer ${process.env.OPENAI_API_KEY}`}});if(!r.ok)throw new Error(`Clé OpenAI refusée (${r.status})`);return true}
 export async function generateConceptVariants({product,niche,format,count=3}){
   count=Math.max(1,Math.min(5,count));
@@ -197,6 +208,74 @@ JSON strict:
   }
   return Array.from({length:count},(_,i)=>freeConcept(product,niche,format,i));
 }
+
+const VIRAL_TOPICS=[
+  {kind:'curiosite',topic:'un fait étonnant du quotidien qu’on remarque rarement'},
+  {kind:'mystere',topic:'un petit mystère réel ou phénomène étrange expliqué sans sensationnalisme'},
+  {kind:'quiz',topic:'un quiz visuel simple avec une réponse surprenante'},
+  {kind:'histoire',topic:'une mini-histoire insolite mais crédible avec chute'},
+  {kind:'top',topic:'un top 5 de faits ou objets inattendus'},
+  {kind:'science',topic:'un phénomène scientifique facile à comprendre'},
+  {kind:'psychologie',topic:'un biais ou comportement humain expliqué simplement'},
+  {kind:'scenario',topic:'un scénario hypothétique absurde mais logique, par exemple que se passerait-il si…'}
+];
+
+function localViralConcept(style='random',topic=''){
+  const pick=style==='random'
+    ? VIRAL_TOPICS[Math.floor(Math.random()*VIRAL_TOPICS.length)]
+    : (VIRAL_TOPICS.find(x=>x.kind===style)||VIRAL_TOPICS[0]);
+  const subject=topic?.trim()||pick.topic;
+  const hooks=[
+    `Tu vas probablement regarder ça jusqu’au bout.`,
+    `Ce détail paraît banal, mais attends la fin.`,
+    `Question rapide : tu aurais trouvé la réponse ?`,
+    `Ça semble faux, pourtant l’explication est toute simple.`,
+    `Une minute pour apprendre un truc complètement inattendu.`
+  ];
+  const hook=hooks[Math.floor(Math.random()*hooks.length)];
+  const paragraphs=[
+    `On part de quelque chose de très simple : ${subject}. Au début, ça paraît presque inutile. Pourtant, quand on regarde comment ça fonctionne vraiment, il y a un détail qui change complètement la façon de le voir.`,
+    `Imagine la situation pendant quelques secondes. La plupart des gens donnent la première réponse qui leur vient. Mais il manque généralement une information importante. C’est précisément là que ça devient intéressant.`,
+    `Le premier indice est facile à rater. Il faut regarder la cause plutôt que le résultat. Une fois qu’on fait ça, le phénomène devient beaucoup plus logique et on comprend pourquoi notre intuition se trompe.`,
+    `Deuxième détail : ce n’est pas forcément exceptionnel. Des choses similaires arrivent régulièrement dans la vie quotidienne, simplement on n’y prête presque jamais attention.`,
+    `Et voilà la partie satisfaisante : quand on rassemble les indices, la réponse paraît évidente. C’est souvent ce qui rend ce genre de curiosité agréable à regarder jusqu’au bout.`,
+    `La prochaine fois que tu vois quelque chose de similaire, essaie de repérer ce détail avant les autres.`
+  ];
+  return {
+    mode:'viral',
+    title:`Viral — ${pick.kind}`,
+    hook,
+    hook_score:82,
+    script:paragraphs.join(' '),
+    caption:`Une minute de curiosité. Tu avais trouvé ? #curiosite #tusavais #pourtoi`,
+    cta:'Tu avais deviné avant la fin ?',
+    visual_beats:['Question','Indice 1','Indice 2','Explication','Réponse','Question finale'],
+    viral_style:pick.kind,
+    topic:subject,
+    target_duration:70
+  };
+}
+
+export async function generateViralConcept({style='random',topic='',trends=[],avoid=[]}={}){
+  if(process.env.AGNES_API_KEY && process.env.AGNES_ENABLED!=='false'){
+    try{
+      const d=await agnesJson(`Crée UNE vidéo TikTok originale en français, sans produit à vendre, conçue pour durer 65 à 85 secondes à voix normale.
+Style: ${style}. Sujet demandé: ${topic||'choisis toi-même un sujet facile à regarder'}. Tendances récentes disponibles: ${Array.isArray(trends)?trends.join(', '):''}. Évite de refaire ces sujets récents: ${Array.isArray(avoid)?avoid.join(' | '):''}.
+Le contenu doit être exact, non trompeur, familial, simple à comprendre, avec un hook immédiat, une progression qui donne envie de connaître la suite et une vraie conclusion. Évite les affirmations médicales, financières ou historiques incertaines.
+JSON strict:
+{"title":"","hook":"","hook_score":0,"script":"un script de 170 à 220 mots","caption":"","cta":"","visual_beats":["","","","","",""],"viral_style":"","topic":"","target_duration":70}`);
+      if(d?.script){
+        d.mode='viral';
+        d.target_duration=Math.max(60,Math.min(90,Number(d.target_duration||70)));
+        return d;
+      }
+    }catch(e){
+      console.error('Agnes viral fallback local:',e.message);
+    }
+  }
+  return localViralConcept(style,topic);
+}
+
 export async function synthesizeSpeech(text,outFile){
   fs.mkdirSync(path.dirname(outFile),{recursive:true});
   const paid=process.env.ZERO_COST_MODE==='false' && process.env.OPENAI_API_KEY && process.env.DEMO_MODE!=='true';

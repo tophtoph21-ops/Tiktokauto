@@ -71,3 +71,26 @@
   .contentactions{display:grid;grid-template-columns:1fr 1fr;gap:8px}
   .contentactions button{min-height:44px}
 }
+
+.mode-card{margin-bottom:14px}
+.mode-card h2{margin-top:0}
+.mode-switch{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.mode-choice{
+  min-height:58px;border-radius:16px;border:1px solid #303441;
+  background:#1b1e27;color:#fff;font-size:1rem;font-weight:700;
+}
+.mode-choice.active{
+  background:linear-gradient(135deg,#6d4aff,#bc55ef);
+  border-color:transparent;
+}
+.viral-options{margin-top:14px}
+.viral-options label{display:block;margin:10px 0}
+.viral-options select,.viral-options input{width:100%;box-sizing:border-box}
+.hidden{display:none!important}
+
+.trend-card{margin-bottom:14px}
+.row-between{display:flex;gap:12px;align-items:center;justify-content:space-between}
+.trend-chips{display:flex;gap:8px;overflow-x:auto;padding:8px 0 2px;scrollbar-width:none}
+.trend-chip{white-space:nowrap;padding:8px 12px;border-radius:999px;background:#1c2130;border:1px solid #333a4c;font-size:.9rem}
+
+body{padding-bottom:80px}.top{position:sticky;top:0;z-index:20;background:#0d0f15cc;backdrop-filter:blur(14px)}main{max-width:920px;margin:auto;padding:14px}.bigbtn{width:100%;min-height:58px;margin-top:16px;font-size:1.05rem}.contentitem{margin:14px 0;padding:14px;border:1px solid #292d38;border-radius:18px;background:#151821}.contentitem video{width:100%;max-height:68vh;border-radius:14px;background:#000}.contenttop{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.product{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:12px;border-bottom:1px solid #292d38}.bottomnav{position:fixed;bottom:0;left:0;right:0;z-index:50}.settings-panel{z-index:100}.good{background:#173526!important;color:#9af0bb!important}.kpis{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}.kpi{padding:14px}.trend-chips{display:flex;overflow:auto;gap:8px}.trend-chip{white-space:nowrap}.row-between{display:flex;justify-content:space-between;gap:10px;align-items:center}.hidden{display:none!important}footer{text-align:center;padding:24px 12px 90px}

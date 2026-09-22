@@ -1,0 +1,19 @@
+RADAR TENDANCES
+
+Ajouté :
+- mise à jour automatique quotidienne
+- lecture best-effort des tendances publiques TikTok Creative Center
+- cache local des tendances
+- mélange avec les performances de ton propre compte
+- fallback local si TikTok bloque la récupération
+- le mode Viral utilise automatiquement les tendances les plus récentes
+- bouton "Actualiser" dans l'app
+
+Limite importante :
+TikTok ne fournit pas d'API générale de tendances pour les apps classiques.
+La Research API est réservée aux chercheurs éligibles. Le radar utilise donc les pages publiques
+Creative Center en best-effort + tes propres statistiques.
+
+Mise à jour :
+remplace les fichiers GitHub par ceux du ZIP.
+Garde ton fichier .txt de vérification TikTok.
