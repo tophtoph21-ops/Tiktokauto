@@ -33,7 +33,7 @@ const getSetting=(k,d='')=>db.prepare('SELECT v FROM settings WHERE k=?').get(k)
 const setSetting=(k,v)=>db.prepare('INSERT INTO settings(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v').run(k,String(v));
 const getSecret=k=>{const v=db.prepare('SELECT v FROM secrets WHERE k=?').get(k)?.v;return v?decrypt(v,APP_SECRET):''};
 const setSecret=(k,v)=>{if(v===undefined||v===null||v==='')return;db.prepare('INSERT INTO secrets(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v').run(k,encrypt(String(v),APP_SECRET));process.env[k]=String(v)};
-for(const k of ['OPENAI_API_KEY','TIKTOK_CLIENT_KEY','TIKTOK_CLIENT_SECRET','TIKTOK_REDIRECT_URI','TIKTOK_SCOPES']){const v=getSecret(k);if(v)process.env[k]=v}
+for(const k of ['AGNES_API_KEY','OPENAI_API_KEY','TIKTOK_CLIENT_KEY','TIKTOK_CLIENT_SECRET','TIKTOK_REDIRECT_URI','TIKTOK_SCOPES']){const v=getSecret(k);if(v)process.env[k]=v}
 const defaults={niche:'gadgets utiles',format:'probleme-solution',daily_count:'1',variants_per_product:'2',auto_render:'true',optimization_mode:'revenue',schedule_gap_minutes:'180',autopilot_enabled:'false',autopilot_hour:'10',min_views_to_optimize:'1000',auto_visuals:'false',demo_mode:'false',zero_cost_mode:'true',agnes_enabled:'true',agnes_video_enabled:'false'};
 for(const [k,v] of Object.entries(defaults))if(getSetting(k,'')==='')setSetting(k,v);
 const isDemo=()=>getSetting('demo_mode','false')==='true';
@@ -66,7 +66,29 @@ const server=http.createServer(async(req,res)=>{const url=new URL(req.url,`http:
 if(p.startsWith('/storage/')){if(serveStorage(res,p))return}
 if(p==='/api/state'&&req.method==='GET'){const o=db.prepare('SELECT open_id,scopes,expires_at,updated_at FROM oauth WHERE provider=?').get('tiktok');return json(res,200,{settings:Object.fromEntries(Object.keys(defaults).map(k=>[k,['daily_count','variants_per_product','schedule_gap_minutes','autopilot_hour','min_views_to_optimize'].includes(k)?Number(getSetting(k)):['auto_render','autopilot_enabled','auto_visuals','zero_cost_mode','agnes_enabled','agnes_video_enabled'].includes(k)?getSetting(k)==='true':getSetting(k)])),products:rankedProducts(100).map(x=>({...x,image_url:publicPath(x.image_path)})),contents:db.prepare('SELECT id FROM contents ORDER BY created_at DESC LIMIT 200').all().map(x=>content(x.id)),dashboard:dashboard(),tiktok:o?{connected:true,...o}:{connected:false},setup:setupStatus(),events:db.prepare('SELECT * FROM events ORDER BY created_at DESC LIMIT 12').all()})}
 if(p==='/api/settings'&&req.method==='POST'){const b=await bodyJson(req);for(const k of Object.keys(defaults))if(k in b)setSetting(k,b[k]);return json(res,200,{ok:true})}
-if(p==='/api/setup'&&req.method==='POST'){const b=await bodyJson(req);for(const k of ['OPENAI_API_KEY','TIKTOK_CLIENT_KEY','TIKTOK_CLIENT_SECRET','TIKTOK_REDIRECT_URI','TIKTOK_SCOPES'])if(b[k])setSecret(k,b[k]);if('demo_mode'in b)setSetting('demo_mode',!!b.demo_mode);if('zero_cost_mode'in b)setSetting('zero_cost_mode',!!b.zero_cost_mode);if('agnes_enabled'in b)setSetting('agnes_enabled',!!b.agnes_enabled);if('agnes_video_enabled'in b)setSetting('agnes_video_enabled',!!b.agnes_video_enabled);return json(res,200,{ok:true,status:setupStatus()})}
+if(p==='/api/setup'&&req.method==='POST'){const b=await bodyJson(req);for(const k of ['AGNES_API_KEY','OPENAI_API_KEY','TIKTOK_CLIENT_KEY','TIKTOK_CLIENT_SECRET','TIKTOK_REDIRECT_URI','TIKTOK_SCOPES'])if(b[k])setSecret(k,b[k]);if('demo_mode'in b)setSetting('demo_mode',!!b.demo_mode);if('zero_cost_mode'in b)setSetting('zero_cost_mode',!!b.zero_cost_mode);if('agnes_enabled'in b)setSetting('agnes_enabled',!!b.agnes_enabled);if('agnes_video_enabled'in b)setSetting('agnes_video_enabled',!!b.agnes_video_enabled);return json(res,200,{ok:true,status:setupStatus()})}
+if(p==='/api/agnes/test'&&req.method==='POST'){
+  if(!process.env.AGNES_API_KEY)return json(res,400,{ok:false,error:'Clé Agnes manquante. Enregistre d’abord ta clé Agnes.'});
+  try{
+    const r=await fetch('https://apihub.agnes-ai.com/v1/chat/completions',{
+      method:'POST',
+      headers:{
+        authorization:`Bearer ${process.env.AGNES_API_KEY}`,
+        'content-type':'application/json'
+      },
+      body:JSON.stringify({
+        model:process.env.AGNES_TEXT_MODEL||'agnes-2.0-flash',
+        messages:[{role:'user',content:'Réponds seulement par OK'}],
+        stream:false
+      })
+    });
+    const txt=await r.text();
+    if(!r.ok)return json(res,400,{ok:false,error:`Agnes répond ${r.status}`,details:txt.slice(0,500)});
+    return json(res,200,{ok:true,message:'Agnes AI connecté'});
+  }catch(e){
+    return json(res,500,{ok:false,error:'Impossible de joindre Agnes AI',details:String(e.message||e)});
+  }
+}
 if(p==='/api/setup/test'&&req.method==='POST'){const ffmpeg=await commandExists('ffmpeg');let openai=false,openaiError='';if(process.env.OPENAI_API_KEY)try{openai=await testOpenAI()}catch(e){openaiError=e.message}return json(res,200,{ffmpeg,openai,openaiError,tiktokApp:!!(process.env.TIKTOK_CLIENT_KEY&&process.env.TIKTOK_CLIENT_SECRET&&process.env.TIKTOK_REDIRECT_URI)})}
 if(p==='/api/products'&&req.method==='POST'){const b=await bodyJson(req),id=uid(),img=decodeImage(b.image_data,id);db.prepare('INSERT INTO products(id,name,category,price,commission_rate,affiliate_url,notes,image_path,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)').run(id,b.name,b.category||'',Number(b.price||0),Number(b.commission_rate||0),b.affiliate_url||'',b.notes||'',img,nowIso(),nowIso());return json(res,201,{product:product(id)})}
 if(p==='/api/products/import'&&req.method==='POST'){const b=await bodyJson(req),rows=parseCsv(b.csv);let n=0;for(const r of rows){const name=r.name||r.nom||r.produit;if(!name)continue;db.prepare('INSERT INTO products(id,name,category,price,commission_rate,affiliate_url,notes,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)').run(uid(),name,r.category||r.categorie||'',Number(r.price||r.prix||0),Number(r.commission_rate||r.commission||0),r.affiliate_url||r.lien||'',r.notes||r.description||'',nowIso(),nowIso());n++}return json(res,200,{imported:n})}

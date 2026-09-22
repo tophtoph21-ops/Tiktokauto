@@ -1,0 +1,18 @@
+CORRECTIF AGNES AI
+
+Ce correctif règle le bouton "Tester Agnes AI".
+
+Il ajoute :
+- sauvegarde chiffrée de AGNES_API_KEY
+- rechargement de la clé après redémarrage Railway
+- vraie route /api/agnes/test
+- test réel avec agnes-2.0-flash
+- message clair pendant le test
+
+Depuis GitHub, remplace seulement :
+- server.mjs
+- app.js
+
+Puis Commit changes et attends le redéploiement Railway.
+Ensuite :
+Réglages > colle la clé Agnes > Tester Agnes AI.

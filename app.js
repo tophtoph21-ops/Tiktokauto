@@ -54,10 +54,23 @@ const mr=document.querySelector('#mobileReady');if(mr)mr.onclick=()=>document.qu
 const ms=document.querySelector('#mobileStats');if(ms)ms.onclick=()=>document.querySelector('#top')?.scrollIntoView({behavior:'smooth',block:'start'});
 
 $('#testAgnes')?.addEventListener('click',async()=>{
+  const b=$('#testAgnes');
+  const oldText=b?.textContent;
   try{
+    if(b){b.disabled=true;b.textContent='Test en cours…'}
+    const key=$('#AGNES_API_KEY')?.value?.trim();
+    if(key){
+      await api('/api/setup',{method:'POST',body:JSON.stringify({AGNES_API_KEY:key,agnes_enabled:true})});
+      $('#AGNES_API_KEY').value='';
+    }
     const r=await api('/api/agnes/test',{method:'POST'});
-    toast(r.ok?'Agnes AI : OK':('Agnes : '+(r.error||r.preview||'erreur')));
-  }catch(e){toast('Agnes : '+e.message)}
+    toast(r.ok?'✅ Agnes AI connecté':'❌ '+(r.error||'Erreur Agnes'));
+    await load();
+  }catch(e){
+    toast('❌ '+e.message);
+  }finally{
+    if(b){b.disabled=false;b.textContent=oldText||'Tester Agnes AI'}
+  }
 });
 
 
