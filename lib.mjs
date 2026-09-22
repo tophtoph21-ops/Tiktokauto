@@ -220,9 +220,47 @@ export async function synthesizeSpeech(text,outFile){
 }
 export async function generateVisual({product,concept,outFile}){fs.mkdirSync(path.dirname(outFile),{recursive:true});if(process.env.ZERO_COST_MODE!=='false'||process.env.DEMO_MODE==='true'||!process.env.OPENAI_API_KEY)return null;const facts=[product?.name,product?.category,product?.notes].filter(Boolean).join(' — ');const prompt=`Create a clean vertical commercial-style background image for a short social video. Subject: ${facts||concept.title}. Show only details supported by the description. No text, no logos, no watermark, no people making endorsements. Modern realistic product-demo composition, neutral background, room for captions, vertical 1024x1536.`;const r=await fetch('https://api.openai.com/v1/images/generations',{method:'POST',headers:{authorization:`Bearer ${process.env.OPENAI_API_KEY}`,'content-type':'application/json'},body:JSON.stringify({model:process.env.OPENAI_IMAGE_MODEL||'gpt-image-2.5-flare',prompt,size:'1024x1536',quality:'medium',output_format:'jpeg'})});const d=await r.json();if(!r.ok)throw new Error(d?.error?.message||`Image OpenAI ${r.status}`);const b64=d?.data?.[0]?.b64_json;if(!b64)return null;fs.writeFileSync(outFile,Buffer.from(b64,'base64'));return outFile}
 function escDrawtext(s=''){return String(s).replace(/\\/g,'\\\\').replace(/:/g,'\\:').replace(/'/g,"\\'").replace(/%/g,'\\%').replace(/\n/g,' ')}
-function subtitleFilters(text,duration=18){const parts=String(text||'').split(/(?<=[.!?])\s+/).filter(Boolean).slice(0,6);if(!parts.length)return[];const slot=duration/parts.length;return parts.map((p,i)=>`drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='${escDrawtext(p.slice(0,115))}':fontcolor=white:fontsize=38:x=(w-text_w)/2:y=1380:box=1:boxcolor=black@0.62:boxborderw=18:enable='between(t,${(i*slot).toFixed(2)},${((i+1)*slot).toFixed(2)})'`)}
+function subtitleFilters(text,duration=18){
+  const words=String(text||'').trim().split(/\s+/).filter(Boolean);
+  if(!words.length)return[];
+  const chunks=[];
+  let cur=[], len=0;
+  for(const w of words){
+    const next=len+w.length+(cur.length?1:0);
+    if(next>34&&cur.length){chunks.push(cur.join(' '));cur=[w];len=w.length}
+    else{cur.push(w);len=next}
+  }
+  if(cur.length)chunks.push(cur.join(' '));
+  const shown=chunks.slice(0,7),slot=duration/shown.length;
+  return shown.map((p,i)=>`drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='${escDrawtext(p)}':fontcolor=white:fontsize=34:x=(w-text_w)/2:y=h-255:box=1:boxcolor=black@0.68:boxborderw=18:enable='between(t,${(i*slot).toFixed(2)},${((i+1)*slot).toFixed(2)})'`)
+}
 export async function audioDuration(file){return new Promise((resolve)=>{const p=spawn('ffprobe',['-v','error','-show_entries','format=duration','-of','default=noprint_wrappers=1:nokey=1',file]);let s='';p.stdout.on('data',d=>s+=d);p.on('close',()=>resolve(Math.max(6,Math.min(60,Number(s)||18))));p.on('error',()=>resolve(18))})}
-export async function renderVerticalVideo({concept,audioFile,outFile,product,imageFile}){fs.mkdirSync(path.dirname(outFile),{recursive:true});const duration=await audioDuration(audioFile),hook=escDrawtext(concept.hook.slice(0,100)),name=escDrawtext((product?.name||concept.title).slice(0,72));const overlays=[`drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='${hook}':fontcolor=white:fontsize=60:x=(w-text_w)/2:y=170:box=1:boxcolor=black@0.62:boxborderw=24`,`drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='${name}':fontcolor=white:fontsize=42:x=(w-text_w)/2:y=1040:box=1:boxcolor=black@0.42:boxborderw=18`,...subtitleFilters(concept.script,duration)].join(',');let args;if(imageFile&&fs.existsSync(imageFile)){args=['-y','-loop','1','-i',imageFile,'-i',audioFile,'-vf',`scale=720:1280:force_original_aspect_ratio=increase,crop=1080:1920,zoompan=z='min(zoom+0.0005,1.08)':d=1:s=720x1280:fps=30,${overlays}`,'-map','0:v','-map','1:a','-c:v','libx264','-preset','ultrafast','-threads','2','-pix_fmt','yuv420p','-c:a','aac','-b:a','128k','-t',String(duration),'-movflags','+faststart',outFile]}else{args=['-y','-f','lavfi','-i','color=c=0x16171c:s=720x1280:r=30','-i',audioFile,'-vf',overlays,'-map','0:v','-map','1:a','-c:v','libx264','-preset','ultrafast','-threads','2','-pix_fmt','yuv420p','-c:a','aac','-b:a','128k','-shortest','-movflags','+faststart',outFile]}await run('ffmpeg',args);return outFile}
+export async function renderVerticalVideo({concept,audioFile,outFile,product,imageFile}){
+  fs.mkdirSync(path.dirname(outFile),{recursive:true});
+  const duration=await audioDuration(audioFile);
+  const hook=escDrawtext(String(concept.hook||concept.title||'').slice(0,72));
+  const name=escDrawtext(String(product?.name||concept.title||'').slice(0,44));
+  const cta=escDrawtext(String(concept.cta||'Voir les détails du produit').slice(0,55));
+  const overlays=[
+    `drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='${hook}':fontcolor=white:fontsize=42:x=(w-text_w)/2:y=115:box=1:boxcolor=black@0.72:boxborderw=20`,
+    ...subtitleFilters(concept.script,duration),
+    `drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='${name}':fontcolor=white:fontsize=30:x=(w-text_w)/2:y=930:box=1:boxcolor=black@0.52:boxborderw=14`,
+    `drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:text='${cta}':fontcolor=white:fontsize=24:x=(w-text_w)/2:y=1080:box=1:boxcolor=black@0.46:boxborderw=12:enable='gte(t,${Math.max(0,duration-3).toFixed(2)})'`
+  ].join(',');
+
+  let args;
+  if(imageFile&&fs.existsSync(imageFile)){
+    args=['-y','-loop','1','-framerate','24','-i',imageFile,'-i',audioFile,
+      '-vf',`scale=900:1600:force_original_aspect_ratio=increase,crop=720:1280,zoompan=z='min(zoom+0.0007,1.06)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=720x1280:fps=24,eq=brightness=-0.05:saturation=1.08,drawbox=x=0:y=0:w=iw:h=220:color=black@0.24:t=fill,drawbox=x=0:y=850:w=iw:h=430:color=black@0.20:t=fill,${overlays}`,
+      '-map','0:v','-map','1:a','-c:v','libx264','-preset','ultrafast','-threads','2','-pix_fmt','yuv420p','-r','24','-c:a','aac','-b:a','96k','-t',String(duration),'-movflags','+faststart',outFile]
+  }else{
+    args=['-y','-f','lavfi','-i','color=c=0x11141c:s=720x1280:r=24','-i',audioFile,
+      '-vf',`drawbox=x=45:y=330:w=630:h=390:color=0x252a38@0.92:t=fill,drawbox=x=75:y=360:w=570:h=330:color=0x171b25@1:t=fill,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='${name}':fontcolor=white:fontsize=38:x=(w-text_w)/2:y=500,${overlays}`,
+      '-map','0:v','-map','1:a','-c:v','libx264','-preset','ultrafast','-threads','2','-pix_fmt','yuv420p','-r','24','-c:a','aac','-b:a','96k','-shortest','-movflags','+faststart',outFile]
+  }
+  await run('ffmpeg',args);
+  return outFile
+}
 export function run(cmd,args){return new Promise((resolve,reject)=>{const p=spawn(cmd,args,{stdio:['ignore','pipe','pipe']});let err='';p.stderr.on('data',d=>err+=d.toString());p.on('error',reject);p.on('close',code=>code===0?resolve():reject(new Error(`${cmd} exited ${code}: ${err.slice(-1800)}`)))})}
 export async function commandExists(cmd){return new Promise(resolve=>{const p=spawn(cmd,['-version']);p.on('error',()=>resolve(false));p.on('close',c=>resolve(c===0))})}
 
