@@ -4,7 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
-import { loadEnv, uid, nowIso, json, bodyJson, encrypt, decrypt, generateConceptVariants, generateViralConcept, synthesizeSpeech, generateVisual, renderVerticalVideo, probeVideoQuality, testOpenAI, commandExists, tiktokExchangeCode, tiktokRefresh, tiktokCreatorInfo, tiktokInitVideo, tiktokUploadVideo, tiktokPostStatus, tiktokQueryVideos } from './lib.mjs';
+import { loadEnv, uid, nowIso, json, bodyJson, encrypt, decrypt, generateConceptVariants, generateViralConcept, synthesizeSpeech, generateVisual, generateVisualSequence, renderVerticalVideo, probeVideoQuality, testOpenAI, commandExists, tiktokExchangeCode, tiktokRefresh, tiktokCreatorInfo, tiktokInitVideo, tiktokUploadVideo, tiktokPostStatus, tiktokQueryVideos } from './lib.mjs';
 
 const ROOT=path.dirname(fileURLToPath(import.meta.url));
 loadEnv(path.join(ROOT,'.env'));
@@ -76,7 +76,68 @@ function friendlyError(err){const s=String(err?.message||err||'Erreur inconnue')
 function topicSignature(s=''){return String(s).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9 ]+/g,' ').replace(/\s+/g,' ').trim().slice(0,120)}
 function recentTopics(limit=30){return db.prepare("SELECT title,hook,topic_signature FROM contents WHERE content_mode='viral' ORDER BY created_at DESC LIMIT ?").all(limit).map(x=>x.topic_signature||topicSignature(`${x.title||''} ${x.hook||''}`)).filter(Boolean)}
 function cleanupStorage(){const days=Math.max(3,Number(getSetting('storage_days','14')||14)),cutoff=Date.now()-days*86400000,refs=new Set();for(const r of db.prepare('SELECT video_path,audio_path,image_path FROM contents').all())for(const p of [r.video_path,r.audio_path,r.image_path])if(p)refs.add(path.resolve(p));let removed=0;for(const dir of ['audio','videos','images']){const d=path.join(ROOT,'storage',dir);if(!fs.existsSync(d))continue;for(const name of fs.readdirSync(d)){const p=path.join(d,name);try{const st=fs.statSync(p);if(st.isFile()&&st.mtimeMs<cutoff&&!refs.has(path.resolve(p))){fs.unlinkSync(p);removed++}}catch{}}}return removed}
-async function renderOne(id){const c=content(id);if(!c)throw new Error('Contenu introuvable');const p=product(c.product_id),audio=path.join(ROOT,'storage','audio',`${id}.${isDemo()?'m4a':'mp3'}`),video=path.join(ROOT,'storage','videos',`${id}.mp4`),image=path.join(ROOT,'storage','images',`${id}.jpg`);db.prepare('UPDATE contents SET status=?,error=NULL,quality_status=?,updated_at=? WHERE id=?').run('RENDERING','CHECKING',nowIso(),id);try{process.env.DEMO_MODE=String(isDemo());process.env.ZERO_COST_MODE=String(isZeroCost());process.env.AGNES_ENABLED=String(getSetting('agnes_enabled','true')==='true');await synthesizeSpeech(`${c.hook}. ${c.script} ${c.cta}`,audio);let imageFile=p?.image_path&&fs.existsSync(p.image_path)?p.image_path:null;const canAgnesVisual=!!process.env.AGNES_API_KEY&&process.env.AGNES_ENABLED!=='false';if(!imageFile&&!isDemo()&&((c.content_mode==='viral'&&canAgnesVisual)||(getSetting('auto_visuals')==='true'&&canAgnesVisual)))try{imageFile=await generateVisual({product:p,concept:c,outFile:image})}catch(e){log('visual_error',friendlyError(e))}await renderVerticalVideo({concept:{...c,content_mode:c.content_mode},audioFile:audio,outFile:video,product:p,imageFile});const q=await probeVideoQuality(video,{minSeconds:c.content_mode==='viral'?55:3});if(!q.ok)throw new Error(`Contrôle qualité: ${q.reason}`);db.prepare('UPDATE contents SET status=?,audio_path=?,video_path=?,image_path=?,quality_status=?,quality_details=?,duration_seconds=?,updated_at=? WHERE id=?').run('READY',audio,video,imageFile||null,'PASS',JSON.stringify(q),Number(q.duration||0),nowIso(),id)}catch(e){const msg=friendlyError(e);db.prepare('UPDATE contents SET status=?,error=?,quality_status=?,quality_details=?,updated_at=? WHERE id=?').run('ERROR',msg,'FAIL',String(e.message||e).slice(0,1200),nowIso(),id);throw new Error(msg)}return content(id)}
+async function renderOne(id){
+  const c=content(id);
+  if(!c)throw new Error('Contenu introuvable');
+  const p=product(c.product_id);
+  const audio=path.join(ROOT,'storage','audio',`${id}.${isDemo()?'m4a':'mp3'}`);
+  const video=path.join(ROOT,'storage','videos',`${id}.mp4`);
+  const image=path.join(ROOT,'storage','images',`${id}.jpg`);
+  const sceneDir=path.join(ROOT,'storage','images',`${id}-scenes`);
+  db.prepare('UPDATE contents SET status=?,error=NULL,quality_status=?,updated_at=? WHERE id=?').run('RENDERING','CHECKING',nowIso(),id);
+
+  let visualAssets=[];
+  try{
+    process.env.DEMO_MODE=String(isDemo());
+    process.env.ZERO_COST_MODE=String(isZeroCost());
+    process.env.AGNES_ENABLED=String(getSetting('agnes_enabled','true')==='true');
+
+    await synthesizeSpeech(`${c.hook}. ${c.script} ${c.cta}`,audio);
+
+    let imageFile=p?.image_path&&fs.existsSync(p.image_path)?p.image_path:null;
+    const canAgnes=!!process.env.AGNES_API_KEY&&process.env.AGNES_ENABLED!=='false';
+
+    if(c.content_mode==='viral'&&!isDemo()&&canAgnes){
+      try{
+        visualAssets=await generateVisualSequence({
+          concept:{...c,content_mode:'viral'},
+          outDir:sceneDir,
+          count:8,
+          useVideoClips:getSetting('agnes_video_enabled','false')==='true'
+        });
+        if(visualAssets.length)imageFile=visualAssets.find(x=>x.type==='image')?.path||imageFile;
+      }catch(e){
+        log('visual_sequence_error',friendlyError(e));
+      }
+    }else if(!imageFile&&!isDemo()&&getSetting('auto_visuals')==='true'&&canAgnes){
+      try{imageFile=await generateVisual({product:p,concept:c,outFile:image})}
+      catch(e){log('visual_error',friendlyError(e))}
+    }
+
+    await renderVerticalVideo({
+      concept:{...c,content_mode:c.content_mode},
+      audioFile:audio,
+      outFile:video,
+      product:p,
+      imageFile,
+      visualAssets
+    });
+
+    const q=await probeVideoQuality(video,{minSeconds:c.content_mode==='viral'?55:3});
+    if(!q.ok)throw new Error(`Contrôle qualité: ${q.reason}`);
+
+    db.prepare('UPDATE contents SET status=?,audio_path=?,video_path=?,image_path=?,quality_status=?,quality_details=?,duration_seconds=?,updated_at=? WHERE id=?')
+      .run('READY',audio,video,imageFile||null,'PASS',JSON.stringify(q),Number(q.duration||0),nowIso(),id);
+  }catch(e){
+    const msg=friendlyError(e);
+    db.prepare('UPDATE contents SET status=?,error=?,quality_status=?,quality_details=?,updated_at=? WHERE id=?')
+      .run('ERROR',msg,'FAIL',String(e.message||e).slice(0,1200),nowIso(),id);
+    throw new Error(msg);
+  }finally{
+    try{fs.rmSync(sceneDir,{recursive:true,force:true})}catch{}
+  }
+  return content(id)
+}
 async function publishOne(id,privacyLevel){const c=content(id);if(!c?.video_path)throw new Error('Vidéo non rendue');if(!c.approved_at)throw new Error('Validation utilisateur requise avant publication');if(isDemo()){db.prepare('UPDATE contents SET status=?,tiktok_status=?,publish_id=?,privacy_level=?,post_id=?,updated_at=? WHERE id=?').run('PUBLISHED','DEMO_PUBLISHED','demo_'+uid(),privacyLevel||'SELF_ONLY','demo_post_'+uid(),nowIso(),id);return content(id)}const token=await accessToken(),info=await tiktokCreatorInfo(token),privacy=info.privacy_level_options?.includes(privacyLevel)?privacyLevel:'SELF_ONLY',size=fs.statSync(c.video_path).size,init=await tiktokInitVideo(token,{fileSize:size,title:c.caption,privacyLevel:privacy,disableComment:info.comment_disabled,disableDuet:info.duet_disabled,disableStitch:info.stitch_disabled});await tiktokUploadVideo(init.upload_url,c.video_path);db.prepare('UPDATE contents SET status=?,publish_id=?,privacy_level=?,tiktok_status=?,updated_at=? WHERE id=?').run('SUBMITTED',init.publish_id,privacy,'PROCESSING',nowIso(),id);return content(id)}
 async function refreshStatuses(){if(isDemo())return;const rows=db.prepare("SELECT id,publish_id FROM contents WHERE publish_id IS NOT NULL AND status IN ('SUBMITTED','PROCESSING')").all();if(!rows.length)return;let token;try{token=await accessToken()}catch{return}for(const r of rows){try{const s=await tiktokPostStatus(token,r.publish_id),st=s.status||'PROCESSING',postId=s.publicaly_available_post_id?.[0]||s.publicly_available_post_id?.[0]||null;db.prepare('UPDATE contents SET tiktok_status=?,post_id=COALESCE(?,post_id),status=?,error=?,updated_at=? WHERE id=?').run(st,postId,st==='PUBLISH_COMPLETE'?'PUBLISHED':st==='FAILED'?'ERROR':'PROCESSING',s.fail_reason||null,nowIso(),r.id)}catch{}}}
 async function syncMetrics(){if(isDemo())return {updated:0};const all=db.prepare("SELECT id,post_id FROM contents WHERE post_id IS NOT NULL AND status='PUBLISHED' AND post_id NOT LIKE 'demo_%'").all();if(!all.length)return{updated:0};const token=await accessToken();let updated=0;for(let i=0;i<all.length;i+=20){const rows=all.slice(i,i+20),data=await tiktokQueryVideos(token,rows.map(x=>x.post_id));for(const v of data.videos||[]){const r=rows.find(x=>String(x.post_id)===String(v.id));if(!r)continue;db.prepare('UPDATE contents SET views=?,likes=?,comments=?,shares=?,synced_at=?,updated_at=? WHERE id=?').run(v.view_count||0,v.like_count||0,v.comment_count||0,v.share_count||0,nowIso(),nowIso(),r.id);updated++}}recalcProductScores();return{updated}}

@@ -1,0 +1,17 @@
+AUTO CONTENT STUDIO — VIDÉOS FLUIDES
+
+Cette version change complètement le rendu Viral :
+
+- Agnes prépare une vraie liste de plans visuels distincts.
+- L'app génère plusieurs images, pas une seule.
+- Par défaut : jusqu'à 8 plans visuels pour une vidéo longue.
+- Si l'option vidéo Agnes est activée : jusqu'à 2 plans peuvent être de courtes vidéos.
+- Les plans sont assemblés automatiquement en une seule vidéo verticale.
+- Chaque image reçoit un léger mouvement/zoom pour éviter l'effet diaporama figé.
+- Aucun prompt, aucune instruction visuelle, aucun visual_beats n'est affiché à l'écran.
+- Seuls le hook, les sous-titres et le CTA sont visibles.
+- Les prompts demandent explicitement zéro texte, zéro UI, zéro logo et zéro watermark dans les images.
+
+Pour mettre à jour :
+remplace les fichiers de ton dépôt GitHub par ceux de ce ZIP.
+Conserve ton fichier .txt de vérification TikTok.

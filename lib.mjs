@@ -303,14 +303,102 @@ export async function generateVisual({product,concept,outFile}){
   if(agnesOk){
     const subject=product
       ? `${product.name||''}. ${product.category||''}. ${product.notes||''}`
-      : `${concept.title||''}. ${concept.topic||''}. ${concept.hook||''}`;
+      : `${concept.title||''}. ${concept.topic||''}`;
     const prompt=product
       ? `Vertical social media background inspired by this product description: ${subject}. Do not invent brand logos or text. Clean realistic composition, room for captions, 9:16.`
-      : `Create a cinematic vertical 9:16 illustration for a short educational TikTok. Topic: ${subject}. Visually intriguing, realistic or editorial, no text, no logos, no watermark, strong central subject, safe for general audiences, room for captions.`;
+      : `Create ONE cinematic vertical 9:16 background image for a short educational social video. Topic: ${subject}. IMPORTANT: absolutely NO visible words, letters, numbers, captions, subtitles, labels, UI, signs, documents with readable writing, logos or watermarks anywhere. Purely visual storytelling, realistic/editorial, strong central subject, clean composition, safe for general audiences, leave negative space for captions added later.`;
     try{return await agnesImage(prompt,outFile)}catch(e){console.error('Agnes image fallback:',e.message)}
   }
   return null;
 }
+
+function splitScriptScenes(text,count=8){
+  const clean=String(text||'').replace(/\s+/g,' ').trim();
+  const sentences=clean.split(/(?<=[.!?])\s+/).filter(Boolean);
+  if(!sentences.length)return Array.from({length:count},(_,i)=>`abstract visual scene ${i+1}`);
+  const groups=Array.from({length:Math.min(count,Math.max(4,sentences.length))},()=>[]);
+  sentences.forEach((s,i)=>groups[Math.min(groups.length-1,Math.floor(i*groups.length/sentences.length))].push(s));
+  return groups.map(g=>g.join(' ').slice(0,260)).filter(Boolean);
+}
+
+async function visualShotPlan(concept,count=8){
+  const local=splitScriptScenes(concept.script,count).map((s,i)=>({
+    prompt:`Cinematic vertical 9:16 visual scene illustrating this idea: ${s}. No text, no letters, no numbers, no captions, no subtitles, no labels, no UI, no logos, no watermarks. Pure visual storytelling, realistic/editorial, dynamic composition, distinct from previous scenes.`,
+    seconds:8
+  }));
+  if(!(process.env.AGNES_API_KEY&&process.env.AGNES_ENABLED!=='false'))return local;
+  try{
+    const d=await agnesJson(`Create a shot list for a vertical social video.
+Title: ${concept.title||''}
+Hook: ${concept.hook||''}
+Script: ${concept.script||''}
+Return exactly ${count} visually DIFFERENT shots that can be generated as images or very short clips.
+Each shot must describe ONLY what should be seen, never text to display.
+Absolutely forbid visible words, captions, labels, UI screens, logos, signs, documents, subtitles or watermarks.
+JSON strict: {"shots":[{"prompt":"","seconds":8}]}`);
+    const shots=Array.isArray(d?.shots)?d.shots.slice(0,count):[];
+    if(shots.length>=4)return shots.map((x,i)=>({
+      prompt:`${String(x.prompt||local[i%local.length]?.prompt||'cinematic visual scene')}. Absolutely no visible text, letters, numbers, captions, labels, UI, logos or watermarks.`,
+      seconds:Math.max(5,Math.min(12,Number(x.seconds||8)))
+    }));
+  }catch(e){console.error('Agnes shot plan fallback:',e.message)}
+  return local;
+}
+
+export async function generateVisualSequence({concept,outDir,count=8,useVideoClips=false}){
+  fs.mkdirSync(outDir,{recursive:true});
+  const shots=await visualShotPlan(concept,count);
+  const assets=[];
+  for(let i=0;i<shots.length;i++){
+    const shot=shots[i];
+    let made=null;
+    if(useVideoClips && process.env.AGNES_API_KEY && process.env.AGNES_ENABLED!=='false' && i<2){
+      try{
+        const file=path.join(outDir,`shot-${String(i+1).padStart(2,'0')}.mp4`);
+        await generateAgnesVideo(`${shot.prompt} Short 5-7 second vertical cinematic clip, smooth motion, no visible text or UI.`,file);
+        made={type:'video',path:file,seconds:Math.max(5,Math.min(8,shot.seconds||7)),prompt:shot.prompt};
+      }catch(e){console.error('Agnes video shot fallback image:',e.message)}
+    }
+    if(!made){
+      try{
+        const file=path.join(outDir,`shot-${String(i+1).padStart(2,'0')}.jpg`);
+        await agnesImage(shot.prompt,file);
+        made={type:'image',path:file,seconds:Math.max(5,Math.min(12,shot.seconds||8)),prompt:shot.prompt};
+      }catch(e){console.error('Agnes image shot failed:',e.message)}
+    }
+    if(made)assets.push(made);
+  }
+  return assets;
+}
+
+async function renderSceneSegments({assets,duration,tmpDir}){
+  if(!assets?.length)return null;
+  fs.mkdirSync(tmpDir,{recursive:true});
+  const per=Math.max(4,duration/assets.length);
+  const segments=[];
+  for(let i=0;i<assets.length;i++){
+    const a=assets[i],seg=path.join(tmpDir,`seg-${String(i+1).padStart(2,'0')}.mp4`);
+    const seconds=Math.min(per+0.15,Math.max(4,Number(a.seconds||per)));
+    let args;
+    if(a.type==='video'){
+      args=['-y','-i',a.path,'-t',String(seconds),
+        '-vf',"scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,fps=24",
+        '-an','-c:v','libx264','-preset','ultrafast','-threads','2','-pix_fmt','yuv420p','-r','24',seg];
+    }else{
+      args=['-y','-loop','1','-framerate','24','-i',a.path,'-t',String(seconds),
+        '-vf',"scale=900:1600:force_original_aspect_ratio=increase,crop=720:1280,zoompan=z='min(zoom+0.0010,1.08)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=720x1280:fps=24,eq=brightness=-0.08:saturation=1.08",
+        '-an','-c:v','libx264','-preset','ultrafast','-threads','2','-pix_fmt','yuv420p','-r','24',seg];
+    }
+    await run('ffmpeg',args);
+    segments.push(seg);
+  }
+  const listFile=path.join(tmpDir,'concat.txt');
+  fs.writeFileSync(listFile,segments.map(p=>`file '${p.replace(/'/g,"'\\''")}'`).join('\n'),'utf8');
+  const combined=path.join(tmpDir,'visual-track.mp4');
+  await run('ffmpeg',['-y','-f','concat','-safe','0','-i',listFile,'-c','copy',combined]);
+  return combined;
+}
+
 function plainText(s=''){return String(s).replace(/[\r\n]+/g,' ').replace(/[^\p{L}\p{N}\s.,!?;:'’()\-–—]/gu,' ').replace(/\s+/g,' ').trim()}
 function wrapWords(text,max=24,maxLines=3){const words=plainText(text).split(/\s+/).filter(Boolean),lines=[];let cur='';for(const w of words){if(/^[!?.,;:]$/.test(w)&&cur){cur+=w;continue}const next=cur?cur+' '+w:w;if(next.length>max&&cur){lines.push(cur);cur=w}else cur=next;if(lines.length===maxLines)break}if(cur&&lines.length<maxLines)lines.push(cur);return lines.slice(0,maxLines)}
 function writeOverlayText(base,key,text){const f=path.join(path.dirname(base),`.${path.basename(base)}.${key}.txt`);fs.writeFileSync(f,plainText(text),'utf8');return f.replace(/\\/g,'/').replace(/:/g,'\\:')}
@@ -322,7 +410,7 @@ function subtitleFilters(text,duration=18,base='out.mp4'){
   chunks.forEach((chunk,i)=>{const lines=wrapWords(chunk,25,2),st=(i*slot).toFixed(2),en=Math.min(duration,(i+1)*slot).toFixed(2);filters.push(...lineDrawFiles(base,lines,{key:`sub-${i}`,y:970,size:32,gap:42,box:'black@0.72',border:14,enable:`between(t,${st},${en})`}))});return filters;
 }
 export async function audioDuration(file){return new Promise((resolve)=>{const p=spawn('ffprobe',['-v','error','-show_entries','format=duration','-of','default=noprint_wrappers=1:nokey=1',file]);let s='';p.stdout.on('data',d=>s+=d);p.on('close',()=>resolve(Math.max(6,Math.min(95,Number(s)||18))));p.on('error',()=>resolve(18))})}
-export async function renderVerticalVideo({concept,audioFile,outFile,product,imageFile}){
+export async function renderVerticalVideo({concept,audioFile,outFile,product,imageFile,visualAssets=[]}){
   fs.mkdirSync(path.dirname(outFile),{recursive:true});
   const duration=await audioDuration(audioFile);
   const isViral=concept.content_mode==='viral'||concept.mode==='viral'||!product;
@@ -333,20 +421,7 @@ export async function renderVerticalVideo({concept,audioFile,outFile,product,ima
     ...subtitleFilters(concept.script,duration,outFile)
   ];
 
-  if(isViral){
-    const beats=(Array.isArray(concept.visual_beats)?concept.visual_beats:[]).filter(Boolean).slice(0,6);
-    if(beats.length){
-      const slot=duration/beats.length;
-      beats.forEach((beat,i)=>{
-        const start=(i*slot).toFixed(2);
-        const end=Math.min(duration,(i+1)*slot).toFixed(2);
-        overlays.push(...lineDrawFiles(outFile,wrapWords(beat,22,2),{
-          key:`beat-${i}`,y:525,size:38,gap:48,box:'black@0.48',border:16,
-          enable:`between(t,${start},${end})`
-        }));
-      });
-    }
-  }else{
+  if(!isViral){
     overlays.push(...lineDrawFiles(outFile,wrapWords(product?.name||concept.title||'',26,2),{
       key:'title',y:710,size:34,gap:44,box:'black@0.48',border:14
     }));
@@ -357,15 +432,30 @@ export async function renderVerticalVideo({concept,audioFile,outFile,product,ima
     enable:`gte(t,${Math.max(0,duration-3.2).toFixed(2)})`
   }));
 
-  const vfBase=imageFile&&fs.existsSync(imageFile)
-    ? `scale=900:1600:force_original_aspect_ratio=increase,crop=720:1280,zoompan=z='min(zoom+0.00045,1.05)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=720x1280:fps=24,eq=brightness=-0.12:saturation=1.05,drawbox=x=0:y=0:w=iw:h=260:color=black@0.20:t=fill,drawbox=x=0:y=900:w=iw:h=380:color=black@0.18:t=fill`
-    : `drawbox=x=0:y=0:w=iw:h=1280:color=0x10131b@1:t=fill,drawbox=x=36:y=320:w=648:h=400:color=0x1e2534@1:t=fill,drawbox=x=54:y=338:w=612:h=364:color=0x151a24@1:t=fill`;
-
-  const args=imageFile&&fs.existsSync(imageFile)
-    ? ['-y','-loop','1','-framerate','24','-i',imageFile,'-i',audioFile,'-vf',`${vfBase},${overlays.join(',')}`,'-map','0:v','-map','1:a','-c:v','libx264','-preset','ultrafast','-threads','2','-pix_fmt','yuv420p','-r','24','-c:a','aac','-b:a','96k','-t',String(duration),'-movflags','+faststart',outFile]
-    : ['-y','-f','lavfi','-i','color=c=0x10131b:s=720x1280:r=24','-i',audioFile,'-vf',`${vfBase},${overlays.join(',')}`,'-map','0:v','-map','1:a','-c:v','libx264','-preset','ultrafast','-threads','2','-pix_fmt','yuv420p','-r','24','-c:a','aac','-b:a','96k','-t',String(duration),'-movflags','+faststart',outFile];
-
+  const tmpDir=path.join(path.dirname(outFile),`.${path.basename(outFile)}-scenes`);
+  let visualTrack=null;
   try{
+    if(isViral&&Array.isArray(visualAssets)&&visualAssets.length>=2){
+      visualTrack=await renderSceneSegments({assets:visualAssets,duration,tmpDir});
+    }
+
+    let args;
+    if(visualTrack&&fs.existsSync(visualTrack)){
+      args=['-y','-stream_loop','-1','-i',visualTrack,'-i',audioFile,
+        '-vf',`drawbox=x=0:y=0:w=iw:h=250:color=black@0.16:t=fill,drawbox=x=0:y=900:w=iw:h=380:color=black@0.16:t=fill,${overlays.join(',')}`,
+        '-map','0:v','-map','1:a','-c:v','libx264','-preset','ultrafast','-threads','2','-pix_fmt','yuv420p','-r','24',
+        '-c:a','aac','-b:a','96k','-t',String(duration),'-movflags','+faststart',outFile];
+    }else if(imageFile&&fs.existsSync(imageFile)){
+      args=['-y','-loop','1','-framerate','24','-i',imageFile,'-i',audioFile,
+        '-vf',`scale=900:1600:force_original_aspect_ratio=increase,crop=720:1280,zoompan=z='min(zoom+0.0007,1.06)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=720x1280:fps=24,eq=brightness=-0.10:saturation=1.05,drawbox=x=0:y=0:w=iw:h=250:color=black@0.16:t=fill,drawbox=x=0:y=900:w=iw:h=380:color=black@0.16:t=fill,${overlays.join(',')}`,
+        '-map','0:v','-map','1:a','-c:v','libx264','-preset','ultrafast','-threads','2','-pix_fmt','yuv420p','-r','24',
+        '-c:a','aac','-b:a','96k','-t',String(duration),'-movflags','+faststart',outFile];
+    }else{
+      args=['-y','-f','lavfi','-i','color=c=0x10131b:s=720x1280:r=24','-i',audioFile,
+        '-vf',`drawbox=x=0:y=0:w=iw:h=1280:color=0x10131b@1:t=fill,${overlays.join(',')}`,
+        '-map','0:v','-map','1:a','-c:v','libx264','-preset','ultrafast','-threads','2','-pix_fmt','yuv420p','-r','24',
+        '-c:a','aac','-b:a','96k','-t',String(duration),'-movflags','+faststart',outFile];
+    }
     await run('ffmpeg',args);
     return outFile;
   }finally{
@@ -374,8 +464,10 @@ export async function renderVerticalVideo({concept,audioFile,outFile,product,ima
         try{fs.unlinkSync(path.join(path.dirname(outFile),f))}catch{}
       }
     }
+    try{fs.rmSync(tmpDir,{recursive:true,force:true})}catch{}
   }
 }
+
 export function run(cmd,args){return new Promise((resolve,reject)=>{const p=spawn(cmd,args,{stdio:['ignore','pipe','pipe']});let err='';p.stderr.on('data',d=>err+=d.toString());p.on('error',reject);p.on('close',code=>code===0?resolve():reject(new Error(`${cmd} exited ${code}: ${err.slice(-1800)}`)))})}
 export async function commandExists(cmd){return new Promise(resolve=>{const p=spawn(cmd,['-version']);p.on('error',()=>resolve(false));p.on('close',c=>resolve(c===0))})}
 
