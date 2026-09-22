@@ -1,0 +1,16 @@
+AUTOCONTENT STUDIO — INTERFACE SIMPLE
+
+Modifications :
+- Réglages déplacés derrière une roue dentée ⚙️
+- "Rendre" devient "Créer la vidéo"
+- bouton Supprimer sur chaque vidéo
+- suppression aussi du fichier MP4/audio/image sur le serveur
+- textes techniques simplifiés
+- "Variantes" devient "Nouvel essai"
+- statuts plus faciles à comprendre
+- interface réglages en panneau mobile
+
+Installation :
+Remplace les fichiers de ton dépôt GitHub par ceux du ZIP.
+IMPORTANT : garde ton fichier TikTok de vérification .txt s'il est déjà dans GitHub.
+Railway redéploiera automatiquement.

@@ -16,3 +16,58 @@
   .bottomnav button{border:0;background:transparent;font-size:12px;padding:7px 2px;min-height:48px;color:#c8cad0}
   #toast{left:12px;right:12px;bottom:82px;max-width:none}
 }
+
+
+/* Mobile simplifié */
+.settings-panel{
+  position:fixed;
+  inset:0;
+  z-index:1000;
+  background:rgba(0,0,0,.68);
+  display:none;
+  align-items:flex-end;
+}
+.settings-panel.open{display:flex}
+.settings-shell{
+  width:100%;
+  max-height:92vh;
+  overflow:auto;
+  background:#11131a;
+  border-radius:24px 24px 0 0;
+  padding:18px 16px 110px;
+  box-shadow:0 -16px 60px rgba(0,0,0,.45);
+}
+.settings-title{
+  position:sticky;
+  top:0;
+  z-index:2;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  background:#11131a;
+  padding:4px 0 14px;
+}
+.settings-title h2{margin:0;font-size:1.35rem}
+.iconbtn,.gearbtn{
+  border:0;
+  border-radius:14px;
+  min-width:48px;
+  min-height:48px;
+  font-size:1.35rem;
+  cursor:pointer;
+}
+.danger{
+  background:#2a171b!important;
+  border-color:#63303a!important;
+  color:#ffabb7!important;
+}
+.bottomnav .gearbtn{
+  background:transparent;
+  padding:0;
+}
+@media(max-width:700px){
+  #settings.grid2{display:block}
+  #settings .card{margin-bottom:14px}
+  .contentactions{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .contentactions button{min-height:44px}
+}

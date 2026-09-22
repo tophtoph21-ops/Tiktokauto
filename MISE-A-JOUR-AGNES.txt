@@ -1,0 +1,13 @@
+MISE À JOUR DEPUIS TON TÉLÉPHONE
+
+Le plus simple :
+- remplace tous les fichiers de ton dépôt GitHub par le contenu de ce ZIP
+- garde le fichier de vérification TikTok .txt déjà présent dans ton dépôt
+- Commit changes
+- attends le redéploiement Railway
+- ouvre Réglages
+- colle ta clé Agnes AI
+- active Agnes
+- Tester Agnes AI
+
+Ne mets jamais la clé Agnes dans GitHub.
