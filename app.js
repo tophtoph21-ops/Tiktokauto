@@ -33,7 +33,36 @@ $('#testSetup').onclick=async()=>{try{const r=await api('/api/setup/test',{metho
 function fileData(file){return new Promise((res,rej)=>{if(!file)return res(null);const r=new FileReader();r.onload=()=>res(r.result);r.onerror=rej;r.readAsDataURL(file)})}
 $('#productForm').onsubmit=async e=>{e.preventDefault();try{const fd=new FormData(e.target),b=Object.fromEntries(fd.entries());b.image_data=await fileData(fd.get('image'));delete b.image;await api('/api/products',{method:'POST',body:JSON.stringify(b)});e.target.reset();toast('Produit ajouté');await load()}catch(e){toast(e.message)}};
 $('#importCsv').onclick=async()=>{try{const r=await api('/api/products/import',{method:'POST',body:JSON.stringify({csv:$('#csv').value})});toast(`${r.imported} produit(s) importé(s)`);$('#csv').value='';await load()}catch(e){toast(e.message)}};
-$('#autopilot').onclick=async()=>{try{$('#autopilot').disabled=true;toast('Génération + montage en cours…');const d=await api('/api/autopilot/run',{method:'POST',body:JSON.stringify({count:+$('#daily_count').value})});toast(`${d.contents.length} contenu(s) créés`);await load()}catch(e){toast(e.message)}finally{$('#autopilot').disabled=false}};
+$('#autopilot').onclick=async()=>{
+  try{
+    $('#autopilot').disabled=true;
+    toast('⏳ Création lancée…');
+    const d=await api('/api/autopilot/run',{method:'POST',body:JSON.stringify({count:1})});
+    await load();
+    toast('🎬 Ta vidéo est en cours de création');
+    let tries=0;
+    const timer=setInterval(async()=>{
+      tries++;
+      try{
+        await load();
+        const ids=(d.contents||[]).map(x=>x.id);
+        const mine=(state.contents||[]).filter(x=>ids.includes(x.id));
+        if(mine.length && mine.every(x=>['READY','ERROR'].includes(x.status))){
+          clearInterval(timer);
+          const ok=mine.some(x=>x.status==='READY');
+          toast(ok?'✅ Vidéo créée !':'❌ La création a échoué. Ouvre Vidéos pour voir l’erreur.');
+        }else if(tries>=45){
+          clearInterval(timer);
+          toast('La création continue. Regarde dans Vidéos dans quelques instants.');
+        }
+      }catch{}
+    },3000);
+  }catch(e){
+    toast('❌ '+e.message);
+  }finally{
+    $('#autopilot').disabled=false;
+  }
+};
 $('#sync').onclick=async()=>{try{const r=await api('/api/sync-metrics',{method:'POST',body:'{}'});toast(state.setup.demo?'Mode démo':`${r.updated} vidéo(s) synchronisée(s)`);await load()}catch(e){toast(e.message)}};$('#optimize').onclick=async()=>{try{const r=await api('/api/optimize',{method:'POST',body:'{}'});toast(`${r.created} nouvelle(s) variante(s) issue(s) des gagnants`);await load()}catch(e){toast(e.message)}};$('#refresh').onclick=load;$('#statusBtn').onclick=async()=>{try{await api('/api/refresh-status',{method:'POST',body:'{}'});toast('Statuts actualisés');await load()}catch(e){toast(e.message)}};
 window.delProduct=async id=>{if(!confirm('Supprimer ce produit ?'))return;try{await api('/api/products/'+id,{method:'DELETE'});await load()}catch(e){toast(e.message)}};window.renderVideo=async id=>{try{toast('Création de la vidéo…');await api(`/api/contents/${id}/render`,{method:'POST',body:'{}'});toast('Vidéo créée');await load()}catch(e){toast(e.message)}};
 async function privacy(){if(state.setup.demo)return'SELF_ONLY';const info=await api('/api/tiktok/creator-info'),def=info.privacy_level_options.includes('PUBLIC_TO_EVERYONE')?'PUBLIC_TO_EVERYONE':'SELF_ONLY',p=prompt(`Compte @${info.creator_username||''}\nVisibilités disponibles : ${info.privacy_level_options.join(', ')}\nChoisis :`,def)||def;if(!info.privacy_level_options.includes(p))throw new Error('Visibilité non autorisée');return p}
@@ -49,7 +78,7 @@ window.addEventListener('appinstalled',()=>{deferredInstallPrompt=null;const b=d
 if('serviceWorker' in navigator) window.addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}));
 const installBtn=document.querySelector('#installApp');if(installBtn)installBtn.onclick=async()=>{if(deferredInstallPrompt){deferredInstallPrompt.prompt();await deferredInstallPrompt.userChoice;deferredInstallPrompt=null;installBtn.hidden=true}else{toast(/iphone|ipad|ipod/i.test(navigator.userAgent)?'Sur iPhone : Partager → Sur l’écran d’accueil':'Dans le menu du navigateur : Ajouter à l’écran d’accueil')}};
 for(const b of document.querySelectorAll('.bottomnav [data-go]')) b.onclick=()=>document.getElementById(b.dataset.go)?.scrollIntoView({behavior:'smooth',block:'start'});
-const mg=document.querySelector('#mobileGenerate');if(mg)mg.onclick=()=>document.querySelector('#autopilot')?.click();
+const mg=document.querySelector('#mobileGenerate');if(mg)mg.onclick=()=>{const b=document.querySelector('#autopilot');if(b)b.click();else toast('Bouton Générer introuvable')};
 const mr=document.querySelector('#mobileReady');if(mr)mr.onclick=()=>document.querySelector('#contents')?.scrollIntoView({behavior:'smooth',block:'start'});
 const ms=document.querySelector('#mobileStats');if(ms)ms.onclick=()=>document.querySelector('#top')?.scrollIntoView({behavior:'smooth',block:'start'});
 

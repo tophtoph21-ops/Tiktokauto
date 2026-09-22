@@ -1,0 +1,18 @@
+CORRECTIF DU BOUTON GÉNÉRER
+
+Remplace seulement :
+- server.mjs
+- app.js
+
+Nouveau fonctionnement :
+1. Tu appuies sur Générer.
+2. La fiche vidéo apparaît immédiatement.
+3. Elle affiche "Création…".
+4. Le serveur génère la voix + MP4 en arrière-plan.
+5. L'écran s'actualise automatiquement toutes les 3 secondes.
+6. Quand c'est fini : "✅ Vidéo créée !"
+
+Le bouton Générer crée maintenant 1 vidéo à la fois pour éviter de saturer Railway.
+
+Après remplacement :
+GitHub > Commit changes > attendre Railway > recharger l'app.

@@ -57,6 +57,28 @@ async function refreshStatuses(){if(isDemo())return;const rows=db.prepare("SELEC
 async function syncMetrics(){if(isDemo())return {updated:0};const all=db.prepare("SELECT id,post_id FROM contents WHERE post_id IS NOT NULL AND status='PUBLISHED' AND post_id NOT LIKE 'demo_%'").all();if(!all.length)return{updated:0};const token=await accessToken();let updated=0;for(let i=0;i<all.length;i+=20){const rows=all.slice(i,i+20),data=await tiktokQueryVideos(token,rows.map(x=>x.post_id));for(const v of data.videos||[]){const r=rows.find(x=>String(x.post_id)===String(v.id));if(!r)continue;db.prepare('UPDATE contents SET views=?,likes=?,comments=?,shares=?,synced_at=?,updated_at=? WHERE id=?').run(v.view_count||0,v.like_count||0,v.comment_count||0,v.share_count||0,nowIso(),nowIso(),r.id);updated++}}recalcProductScores();return{updated}}
 async function optimize(){const min=Number(getSetting('min_views_to_optimize','1000')),rows=db.prepare("SELECT * FROM contents WHERE status='PUBLISHED' AND optimized_at IS NULL AND views>=? ORDER BY revenue*1000.0/CASE WHEN views=0 THEN 1 ELSE views END DESC LIMIT 3").all(min);let created=0;for(const r of rows){const rpm=r.views?1000*r.revenue/r.views:0;if(rpm>0||r.orders>0){const v=await makeVariants(r.product_id,Math.min(3,Number(getSetting('variants_per_product'))));created+=v.length;db.prepare('UPDATE contents SET optimized_at=? WHERE id=?').run(nowIso(),r.id)}}return{created}}
 async function runAutopilot(count){const target=Math.max(1,Math.min(12,Number(count||getSetting('daily_count')))),variants=Math.max(1,Math.min(5,Number(getSetting('variants_per_product')))),candidates=rankedProducts(target),out=[];if(!candidates.length)out.push(...await makeVariants(null,variants));else for(const p of candidates.slice(0,target))out.push(...await makeVariants(p.id,variants));if(getSetting('auto_render')==='true')for(const c of out)try{await renderOne(c.id)}catch(e){log('render_error',e.message)}return out}
+async function runManualGenerate(count){
+  const target=Math.max(1,Math.min(3,Number(count||1)));
+  const variants=1;
+  const candidates=rankedProducts(target);
+  const out=[];
+  if(!candidates.length)out.push(...await makeVariants(null,variants));
+  else for(const p of candidates.slice(0,target))out.push(...await makeVariants(p.id,variants));
+
+  // Manual "Générer" always creates the final video.
+  for(const c of out){
+    setTimeout(async()=>{
+      try{
+        await renderOne(c.id);
+        log('manual_render_done',`Vidéo ${c.id} créée`);
+      }catch(e){
+        log('manual_render_error',String(e.message||e));
+      }
+    },50);
+  }
+  return out;
+}
+
 async function schedulerTick(){try{await refreshStatuses();const now=new Date(),today=now.toISOString().slice(0,10);if(getSetting('autopilot_enabled')==='true'&&now.getHours()>=Number(getSetting('autopilot_hour','10'))&&getSetting('last_autopilot_date')!==today){await runAutopilot();setSetting('last_autopilot_date',today);log('autopilot','Génération quotidienne terminée')}const due=db.prepare("SELECT id,privacy_level FROM contents WHERE status IN ('READY','SCHEDULED') AND approved_at IS NOT NULL AND scheduled_at IS NOT NULL AND scheduled_at<=? LIMIT 1").all(now.toISOString());for(const r of due)try{await publishOne(r.id,r.privacy_level)}catch(e){db.prepare('UPDATE contents SET error=?,updated_at=? WHERE id=?').run(String(e.message||e),nowIso(),r.id)}await optimize()}catch(e){log('scheduler_error',e.message)}}
 function decodeImage(data,id){if(!data)return null;const m=String(data).match(/^data:image\/(png|jpeg|jpg|webp);base64,(.+)$/);if(!m)throw new Error('Image invalide');const ext=m[1]==='jpeg'?'jpg':m[1],file=path.join(ROOT,'storage','images',`product-${id}.${ext}`);fs.writeFileSync(file,Buffer.from(m[2],'base64'));return file}
 function parseCsv(text){const lines=String(text||'').split(/\r?\n/).filter(Boolean);if(!lines.length)return[];const sep=lines[0].includes(';')?';':',';const headers=lines[0].split(sep).map(x=>x.trim().toLowerCase());return lines.slice(1).map(line=>{const cells=line.split(sep).map(x=>x.trim());return Object.fromEntries(headers.map((h,i)=>[h,cells[i]??'']))})}
@@ -93,7 +115,7 @@ if(p==='/api/setup/test'&&req.method==='POST'){const ffmpeg=await commandExists(
 if(p==='/api/products'&&req.method==='POST'){const b=await bodyJson(req),id=uid(),img=decodeImage(b.image_data,id);db.prepare('INSERT INTO products(id,name,category,price,commission_rate,affiliate_url,notes,image_path,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)').run(id,b.name,b.category||'',Number(b.price||0),Number(b.commission_rate||0),b.affiliate_url||'',b.notes||'',img,nowIso(),nowIso());return json(res,201,{product:product(id)})}
 if(p==='/api/products/import'&&req.method==='POST'){const b=await bodyJson(req),rows=parseCsv(b.csv);let n=0;for(const r of rows){const name=r.name||r.nom||r.produit;if(!name)continue;db.prepare('INSERT INTO products(id,name,category,price,commission_rate,affiliate_url,notes,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)').run(uid(),name,r.category||r.categorie||'',Number(r.price||r.prix||0),Number(r.commission_rate||r.commission||0),r.affiliate_url||r.lien||'',r.notes||r.description||'',nowIso(),nowIso());n++}return json(res,200,{imported:n})}
 if(p.startsWith('/api/products/')&&req.method==='DELETE'){db.prepare('DELETE FROM products WHERE id=?').run(p.split('/').pop());return json(res,200,{ok:true})}
-if(p==='/api/autopilot/run'&&req.method==='POST'){const b=await bodyJson(req);return json(res,201,{contents:await runAutopilot(b.count)})}
+if(p==='/api/autopilot/run'&&req.method==='POST'){const b=await bodyJson(req);const contents=await runManualGenerate(b.count||1);return json(res,202,{ok:true,contents,message:'Création lancée'})}
 
 if(/^\/api\/contents\/[^/]+$/.test(p)&&req.method==='DELETE'){
   const id=p.split('/')[3],c=content(id);
