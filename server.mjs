@@ -76,7 +76,7 @@ function friendlyError(err){const s=String(err?.message||err||'Erreur inconnue')
 function topicSignature(s=''){return String(s).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9 ]+/g,' ').replace(/\s+/g,' ').trim().slice(0,120)}
 function recentTopics(limit=30){return db.prepare("SELECT title,hook,topic_signature FROM contents WHERE content_mode='viral' ORDER BY created_at DESC LIMIT ?").all(limit).map(x=>x.topic_signature||topicSignature(`${x.title||''} ${x.hook||''}`)).filter(Boolean)}
 function cleanupStorage(){const days=Math.max(3,Number(getSetting('storage_days','14')||14)),cutoff=Date.now()-days*86400000,refs=new Set();for(const r of db.prepare('SELECT video_path,audio_path,image_path FROM contents').all())for(const p of [r.video_path,r.audio_path,r.image_path])if(p)refs.add(path.resolve(p));let removed=0;for(const dir of ['audio','videos','images']){const d=path.join(ROOT,'storage',dir);if(!fs.existsSync(d))continue;for(const name of fs.readdirSync(d)){const p=path.join(d,name);try{const st=fs.statSync(p);if(st.isFile()&&st.mtimeMs<cutoff&&!refs.has(path.resolve(p))){fs.unlinkSync(p);removed++}}catch{}}}return removed}
-async function renderOne(id){const c=content(id);if(!c)throw new Error('Contenu introuvable');const p=product(c.product_id),audio=path.join(ROOT,'storage','audio',`${id}.${isDemo()?'m4a':'mp3'}`),video=path.join(ROOT,'storage','videos',`${id}.mp4`),image=path.join(ROOT,'storage','images',`${id}.jpg`);db.prepare('UPDATE contents SET status=?,error=NULL,quality_status=?,updated_at=? WHERE id=?').run('RENDERING','CHECKING',nowIso(),id);try{process.env.DEMO_MODE=String(isDemo());process.env.ZERO_COST_MODE=String(isZeroCost());process.env.AGNES_ENABLED=String(getSetting('agnes_enabled','true')==='true');await synthesizeSpeech(`${c.hook}. ${c.script} ${c.cta}`,audio);let imageFile=p?.image_path&&fs.existsSync(p.image_path)?p.image_path:null;if(!imageFile&&getSetting('auto_visuals')==='true'&&!isDemo()&&!isZeroCost())try{imageFile=await generateVisual({product:p,concept:c,outFile:image})}catch(e){log('visual_error',friendlyError(e))}await renderVerticalVideo({concept:c,audioFile:audio,outFile:video,product:p,imageFile});const q=await probeVideoQuality(video,{minSeconds:c.content_mode==='viral'?55:3});if(!q.ok)throw new Error(`Contrôle qualité: ${q.reason}`);db.prepare('UPDATE contents SET status=?,audio_path=?,video_path=?,image_path=?,quality_status=?,quality_details=?,duration_seconds=?,updated_at=? WHERE id=?').run('READY',audio,video,imageFile||null,'PASS',JSON.stringify(q),Number(q.duration||0),nowIso(),id)}catch(e){const msg=friendlyError(e);db.prepare('UPDATE contents SET status=?,error=?,quality_status=?,quality_details=?,updated_at=? WHERE id=?').run('ERROR',msg,'FAIL',String(e.message||e).slice(0,1200),nowIso(),id);throw new Error(msg)}return content(id)}
+async function renderOne(id){const c=content(id);if(!c)throw new Error('Contenu introuvable');const p=product(c.product_id),audio=path.join(ROOT,'storage','audio',`${id}.${isDemo()?'m4a':'mp3'}`),video=path.join(ROOT,'storage','videos',`${id}.mp4`),image=path.join(ROOT,'storage','images',`${id}.jpg`);db.prepare('UPDATE contents SET status=?,error=NULL,quality_status=?,updated_at=? WHERE id=?').run('RENDERING','CHECKING',nowIso(),id);try{process.env.DEMO_MODE=String(isDemo());process.env.ZERO_COST_MODE=String(isZeroCost());process.env.AGNES_ENABLED=String(getSetting('agnes_enabled','true')==='true');await synthesizeSpeech(`${c.hook}. ${c.script} ${c.cta}`,audio);let imageFile=p?.image_path&&fs.existsSync(p.image_path)?p.image_path:null;const canAgnesVisual=!!process.env.AGNES_API_KEY&&process.env.AGNES_ENABLED!=='false';if(!imageFile&&!isDemo()&&((c.content_mode==='viral'&&canAgnesVisual)||(getSetting('auto_visuals')==='true'&&canAgnesVisual)))try{imageFile=await generateVisual({product:p,concept:c,outFile:image})}catch(e){log('visual_error',friendlyError(e))}await renderVerticalVideo({concept:{...c,content_mode:c.content_mode},audioFile:audio,outFile:video,product:p,imageFile});const q=await probeVideoQuality(video,{minSeconds:c.content_mode==='viral'?55:3});if(!q.ok)throw new Error(`Contrôle qualité: ${q.reason}`);db.prepare('UPDATE contents SET status=?,audio_path=?,video_path=?,image_path=?,quality_status=?,quality_details=?,duration_seconds=?,updated_at=? WHERE id=?').run('READY',audio,video,imageFile||null,'PASS',JSON.stringify(q),Number(q.duration||0),nowIso(),id)}catch(e){const msg=friendlyError(e);db.prepare('UPDATE contents SET status=?,error=?,quality_status=?,quality_details=?,updated_at=? WHERE id=?').run('ERROR',msg,'FAIL',String(e.message||e).slice(0,1200),nowIso(),id);throw new Error(msg)}return content(id)}
 async function publishOne(id,privacyLevel){const c=content(id);if(!c?.video_path)throw new Error('Vidéo non rendue');if(!c.approved_at)throw new Error('Validation utilisateur requise avant publication');if(isDemo()){db.prepare('UPDATE contents SET status=?,tiktok_status=?,publish_id=?,privacy_level=?,post_id=?,updated_at=? WHERE id=?').run('PUBLISHED','DEMO_PUBLISHED','demo_'+uid(),privacyLevel||'SELF_ONLY','demo_post_'+uid(),nowIso(),id);return content(id)}const token=await accessToken(),info=await tiktokCreatorInfo(token),privacy=info.privacy_level_options?.includes(privacyLevel)?privacyLevel:'SELF_ONLY',size=fs.statSync(c.video_path).size,init=await tiktokInitVideo(token,{fileSize:size,title:c.caption,privacyLevel:privacy,disableComment:info.comment_disabled,disableDuet:info.duet_disabled,disableStitch:info.stitch_disabled});await tiktokUploadVideo(init.upload_url,c.video_path);db.prepare('UPDATE contents SET status=?,publish_id=?,privacy_level=?,tiktok_status=?,updated_at=? WHERE id=?').run('SUBMITTED',init.publish_id,privacy,'PROCESSING',nowIso(),id);return content(id)}
 async function refreshStatuses(){if(isDemo())return;const rows=db.prepare("SELECT id,publish_id FROM contents WHERE publish_id IS NOT NULL AND status IN ('SUBMITTED','PROCESSING')").all();if(!rows.length)return;let token;try{token=await accessToken()}catch{return}for(const r of rows){try{const s=await tiktokPostStatus(token,r.publish_id),st=s.status||'PROCESSING',postId=s.publicaly_available_post_id?.[0]||s.publicly_available_post_id?.[0]||null;db.prepare('UPDATE contents SET tiktok_status=?,post_id=COALESCE(?,post_id),status=?,error=?,updated_at=? WHERE id=?').run(st,postId,st==='PUBLISH_COMPLETE'?'PUBLISHED':st==='FAILED'?'ERROR':'PROCESSING',s.fail_reason||null,nowIso(),r.id)}catch{}}}
 async function syncMetrics(){if(isDemo())return {updated:0};const all=db.prepare("SELECT id,post_id FROM contents WHERE post_id IS NOT NULL AND status='PUBLISHED' AND post_id NOT LIKE 'demo_%'").all();if(!all.length)return{updated:0};const token=await accessToken();let updated=0;for(let i=0;i<all.length;i+=20){const rows=all.slice(i,i+20),data=await tiktokQueryVideos(token,rows.map(x=>x.post_id));for(const v of data.videos||[]){const r=rows.find(x=>String(x.post_id)===String(v.id));if(!r)continue;db.prepare('UPDATE contents SET views=?,likes=?,comments=?,shares=?,synced_at=?,updated_at=? WHERE id=?').run(v.view_count||0,v.like_count||0,v.comment_count||0,v.share_count||0,nowIso(),nowIso(),r.id);updated++}}recalcProductScores();return{updated}}
@@ -87,6 +87,7 @@ async function runAutopilot(count){const target=Math.max(1,Math.min(12,Number(co
 function normalizeTrendLabel(s){
   return String(s||'').replace(/^#/,'').replace(/\\u0026/g,'&').trim().slice(0,80);
 }
+function cleanTrendCache(){for(const r of db.prepare('SELECT id,label FROM trends').all()){const x=String(r.label||'').trim();if(!/^[\p{L}\p{N}_ ]{3,50}$/u.test(x)||/[a-f0-9]{6}/i.test(x)||/(__|rgba|rgb|font|color|fff|px$)/i.test(x))db.prepare('DELETE FROM trends WHERE id=?').run(r.id)}}
 function saveTrend(label,score=50,source='creative_center',region='FR'){
   label=normalizeTrendLabel(label);
   if(!label||label.length<2)return;
@@ -102,22 +103,12 @@ function topTrends(limit=20){
 }
 function trendWordsFromHtml(html){
   const found=new Map();
-  const patterns=[
-    /"hashtagName"\s*:\s*"([^"]{2,80})"/g,
-    /"hashtag_name"\s*:\s*"([^"]{2,80})"/g,
-    /"name"\s*:\s*"#([^"]{2,80})"/g,
-    /#([A-Za-zÀ-ÿ0-9_]{3,50})/g
-  ];
-  for(const rx of patterns){
-    let m;
-    while((m=rx.exec(html))&&found.size<80){
-      const v=normalizeTrendLabel(m[1]);
-      if(v && !/^(tiktok|fyp|foryou|viral)$/i.test(v)) found.set(v,(found.get(v)||0)+1);
-    }
-  }
-  return [...found.entries()].map(([label,hits],i)=>({label,score:90-i+Math.min(8,hits)})).slice(0,35);
+  const patterns=[/"hashtagName"\s*:\s*"([^"\\]{2,60})"/g,/"hashtag_name"\s*:\s*"([^"\\]{2,60})"/g];
+  for(const rx of patterns){let m;while((m=rx.exec(html))&&found.size<60){const v=normalizeTrendLabel(m[1]);if(/^[\p{L}\p{N}_ ]{3,50}$/u.test(v)&&!/[a-f0-9]{6}/i.test(v)&&!/^(tiktok|fyp|foryou|viral)$/i.test(v))found.set(v,(found.get(v)||0)+1)}}
+  return [...found.entries()].map(([label,hits],i)=>({label,score:90-i+Math.min(8,hits)})).slice(0,30)
 }
 async function refreshTrendRadar({force=false}={}){
+  cleanTrendCache();
   if(getSetting('trend_radar_enabled','true')!=='true')return {ok:false,disabled:true};
   const last=Number(getSetting('trend_last_refresh','0')||0);
   if(!force && Date.now()-last<20*3600000)return {ok:true,cached:true,trends:topTrends(20)};
@@ -159,7 +150,21 @@ async function refreshTrendRadar({force=false}={}){
 function scoredTrends(limit=20){const now=Date.now();return topTrends(80).map(t=>{const age=Math.max(0,(now-Number(t.captured_at||now))/3600000),fresh=Math.max(0,30-age*.7),own=t.source==='own_account'?28:0;return{...t,final_score:Number((Number(t.score||0)+fresh+own).toFixed(1))}}).sort((a,b)=>b.final_score-a.final_score).slice(0,limit)}
 function trendContext(limit=8){return scoredTrends(limit).map(x=>x.label)}
 
-async function makeViralContent(style='random',topic=''){process.env.AGNES_ENABLED=String(getSetting('agnes_enabled','true')==='true');const trends=trendContext(10),avoid=recentTopics(30),autoTopic=topic||trends.slice(0,5).join(', '),concept=await generateViralConcept({style,topic:autoTopic,trends,avoid}),sig=topicSignature(`${concept.topic||''} ${concept.title||''} ${concept.hook||''}`),id=uid(),stamp=nowIso();db.prepare(`INSERT INTO contents(id,product_id,title,hook,hook_score,script,caption,cta,status,created_at,updated_at,variant_index,content_mode,topic_signature) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id,null,concept.title,concept.hook,concept.hook_score||80,concept.script,concept.caption,concept.cta,'SCRIPTED',stamp,stamp,0,'viral',sig);const c=content(id);setTimeout(async()=>{try{await renderOne(id);log('viral_render_done',`Vidéo virale ${id} créée`)}catch(e){log('viral_render_error',friendlyError(e))}},50);return c}
+async function makeViralContent(style='random',topic=''){
+  process.env.AGNES_ENABLED=String(getSetting('agnes_enabled','true')==='true');
+  cleanTrendCache();
+  const trends=trendContext(10).filter(x=>/^[\p{L}\p{N}_ ]{3,50}$/u.test(x)&&!/[a-f0-9]{6}/i.test(x));
+  const avoid=recentTopics(30);
+  const autoTopic=topic||trends.slice(0,3).join(', ');
+  const concept=await generateViralConcept({style,topic:autoTopic,trends,avoid});
+  const sig=topicSignature(`${concept.topic||''} ${concept.title||''} ${concept.hook||''}`);
+  const id=uid(),stamp=nowIso();
+  db.prepare(`INSERT INTO contents(id,product_id,title,hook,hook_score,script,caption,cta,visual_beats,status,created_at,updated_at,variant_index,content_mode,topic_signature) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(id,null,concept.title,concept.hook,concept.hook_score||80,concept.script,concept.caption,concept.cta,JSON.stringify(concept.visual_beats||[]),'SCRIPTED',stamp,stamp,0,'viral',sig);
+  const c=content(id);
+  setTimeout(async()=>{try{await renderOne(id);log('viral_render_done',`Vidéo virale ${id} créée`)}catch(e){log('viral_render_error',friendlyError(e))}},50);
+  return c
+}
 
 async function runManualGenerate(count){
   const target=Math.max(1,Math.min(3,Number(count||1)));

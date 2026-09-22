@@ -297,48 +297,84 @@ export async function synthesizeSpeech(text,outFile){
   fs.writeFileSync(outFile,Buffer.from(await r.arrayBuffer()));
   return outFile
 }
-export async function generateVisual({product,concept,outFile}){fs.mkdirSync(path.dirname(outFile),{recursive:true});if(process.env.ZERO_COST_MODE!=='false'||process.env.DEMO_MODE==='true'||!process.env.OPENAI_API_KEY)return null;const facts=[product?.name,product?.category,product?.notes].filter(Boolean).join(' — ');const prompt=`Create a clean vertical commercial-style background image for a short social video. Subject: ${facts||concept.title}. Show only details supported by the description. No text, no logos, no watermark, no people making endorsements. Modern realistic product-demo composition, neutral background, room for captions, vertical 1024x1536.`;const r=await fetch('https://api.openai.com/v1/images/generations',{method:'POST',headers:{authorization:`Bearer ${process.env.OPENAI_API_KEY}`,'content-type':'application/json'},body:JSON.stringify({model:process.env.OPENAI_IMAGE_MODEL||'gpt-image-2.5-flare',prompt,size:'1024x1536',quality:'medium',output_format:'jpeg'})});const d=await r.json();if(!r.ok)throw new Error(d?.error?.message||`Image OpenAI ${r.status}`);const b64=d?.data?.[0]?.b64_json;if(!b64)return null;fs.writeFileSync(outFile,Buffer.from(b64,'base64'));return outFile}
-function escDrawtext(s=''){return String(s).replace(/\\/g,'\\\\').replace(/:/g,'\\:').replace(/'/g,"\\'").replace(/%/g,'\\%').replace(/\n/g,' ')}
-function subtitleFilters(text,duration=18){
-  const words=String(text||'').trim().split(/\s+/).filter(Boolean);
-  if(!words.length)return[];
-  const chunks=[];
-  let cur=[], len=0;
-  for(const w of words){
-    const next=len+w.length+(cur.length?1:0);
-    if(next>34&&cur.length){chunks.push(cur.join(' '));cur=[w];len=w.length}
-    else{cur.push(w);len=next}
+export async function generateVisual({product,concept,outFile}){
+  fs.mkdirSync(path.dirname(outFile),{recursive:true});
+  const agnesOk=!!process.env.AGNES_API_KEY && process.env.AGNES_ENABLED!=='false';
+  if(agnesOk){
+    const subject=product
+      ? `${product.name||''}. ${product.category||''}. ${product.notes||''}`
+      : `${concept.title||''}. ${concept.topic||''}. ${concept.hook||''}`;
+    const prompt=product
+      ? `Vertical social media background inspired by this product description: ${subject}. Do not invent brand logos or text. Clean realistic composition, room for captions, 9:16.`
+      : `Create a cinematic vertical 9:16 illustration for a short educational TikTok. Topic: ${subject}. Visually intriguing, realistic or editorial, no text, no logos, no watermark, strong central subject, safe for general audiences, room for captions.`;
+    try{return await agnesImage(prompt,outFile)}catch(e){console.error('Agnes image fallback:',e.message)}
   }
-  if(cur.length)chunks.push(cur.join(' '));
-  const shown=chunks.slice(0,7),slot=duration/shown.length;
-  return shown.map((p,i)=>`drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='${escDrawtext(p)}':fontcolor=white:fontsize=34:x=(w-text_w)/2:y=h-255:box=1:boxcolor=black@0.68:boxborderw=18:enable='between(t,${(i*slot).toFixed(2)},${((i+1)*slot).toFixed(2)})'`)
+  return null;
 }
-export async function audioDuration(file){return new Promise((resolve)=>{const p=spawn('ffprobe',['-v','error','-show_entries','format=duration','-of','default=noprint_wrappers=1:nokey=1',file]);let s='';p.stdout.on('data',d=>s+=d);p.on('close',()=>resolve(Math.max(6,Math.min(60,Number(s)||18))));p.on('error',()=>resolve(18))})}
+function plainText(s=''){return String(s).replace(/[\r\n]+/g,' ').replace(/[^\p{L}\p{N}\s.,!?;:'’()\-–—]/gu,' ').replace(/\s+/g,' ').trim()}
+function wrapWords(text,max=24,maxLines=3){const words=plainText(text).split(/\s+/).filter(Boolean),lines=[];let cur='';for(const w of words){if(/^[!?.,;:]$/.test(w)&&cur){cur+=w;continue}const next=cur?cur+' '+w:w;if(next.length>max&&cur){lines.push(cur);cur=w}else cur=next;if(lines.length===maxLines)break}if(cur&&lines.length<maxLines)lines.push(cur);return lines.slice(0,maxLines)}
+function writeOverlayText(base,key,text){const f=path.join(path.dirname(base),`.${path.basename(base)}.${key}.txt`);fs.writeFileSync(f,plainText(text),'utf8');return f.replace(/\\/g,'/').replace(/:/g,'\\:')}
+function lineDrawFiles(base,lines,{key='txt',y=100,size=42,gap=52,box='black@0.72',border=18,font='DejaVuSans-Bold.ttf',enable='' }={}){return lines.map((line,i)=>{const tf=writeOverlayText(base,`${key}-${i}`,line);return `drawtext=fontfile=/usr/share/fonts/truetype/dejavu/${font}:textfile='${tf}':fontcolor=white:fontsize=${size}:x=(w-text_w)/2:y=${y+i*gap}:box=1:boxcolor=${box}:boxborderw=${border}${enable?`:enable='${enable}'`:''}`})}
+function subtitleFilters(text,duration=18,base='out.mp4'){
+  const words=plainText(text).split(/\s+/).filter(Boolean);if(!words.length)return[];
+  const chunks=[];let cur='';for(const w of words){const n=cur?cur+' '+w:w;if(n.length>44&&cur){chunks.push(cur);cur=w}else cur=n}if(cur)chunks.push(cur);
+  const slot=Math.max(1.9,duration/Math.max(1,chunks.length)),filters=[];
+  chunks.forEach((chunk,i)=>{const lines=wrapWords(chunk,25,2),st=(i*slot).toFixed(2),en=Math.min(duration,(i+1)*slot).toFixed(2);filters.push(...lineDrawFiles(base,lines,{key:`sub-${i}`,y:970,size:32,gap:42,box:'black@0.72',border:14,enable:`between(t,${st},${en})`}))});return filters;
+}
+export async function audioDuration(file){return new Promise((resolve)=>{const p=spawn('ffprobe',['-v','error','-show_entries','format=duration','-of','default=noprint_wrappers=1:nokey=1',file]);let s='';p.stdout.on('data',d=>s+=d);p.on('close',()=>resolve(Math.max(6,Math.min(95,Number(s)||18))));p.on('error',()=>resolve(18))})}
 export async function renderVerticalVideo({concept,audioFile,outFile,product,imageFile}){
   fs.mkdirSync(path.dirname(outFile),{recursive:true});
   const duration=await audioDuration(audioFile);
-  const hook=escDrawtext(String(concept.hook||concept.title||'').slice(0,72));
-  const name=escDrawtext(String(product?.name||concept.title||'').slice(0,44));
-  const cta=escDrawtext(String(concept.cta||'Voir les détails du produit').slice(0,55));
+  const isViral=concept.content_mode==='viral'||concept.mode==='viral'||!product;
   const overlays=[
-    `drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='${hook}':fontcolor=white:fontsize=42:x=(w-text_w)/2:y=115:box=1:boxcolor=black@0.72:boxborderw=20`,
-    ...subtitleFilters(concept.script,duration),
-    `drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='${name}':fontcolor=white:fontsize=30:x=(w-text_w)/2:y=930:box=1:boxcolor=black@0.52:boxborderw=14`,
-    `drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:text='${cta}':fontcolor=white:fontsize=24:x=(w-text_w)/2:y=1080:box=1:boxcolor=black@0.46:boxborderw=12:enable='gte(t,${Math.max(0,duration-3).toFixed(2)})'`
-  ].join(',');
+    ...lineDrawFiles(outFile,wrapWords(concept.hook||concept.title||'',25,3),{
+      key:'hook',y:95,size:40,gap:50,box:'black@0.74',border:16
+    }),
+    ...subtitleFilters(concept.script,duration,outFile)
+  ];
 
-  let args;
-  if(imageFile&&fs.existsSync(imageFile)){
-    args=['-y','-loop','1','-framerate','24','-i',imageFile,'-i',audioFile,
-      '-vf',`scale=900:1600:force_original_aspect_ratio=increase,crop=720:1280,zoompan=z='min(zoom+0.0007,1.06)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=720x1280:fps=24,eq=brightness=-0.05:saturation=1.08,drawbox=x=0:y=0:w=iw:h=220:color=black@0.24:t=fill,drawbox=x=0:y=850:w=iw:h=430:color=black@0.20:t=fill,${overlays}`,
-      '-map','0:v','-map','1:a','-c:v','libx264','-preset','ultrafast','-threads','2','-pix_fmt','yuv420p','-r','24','-c:a','aac','-b:a','96k','-t',String(duration),'-movflags','+faststart',outFile]
+  if(isViral){
+    const beats=(Array.isArray(concept.visual_beats)?concept.visual_beats:[]).filter(Boolean).slice(0,6);
+    if(beats.length){
+      const slot=duration/beats.length;
+      beats.forEach((beat,i)=>{
+        const start=(i*slot).toFixed(2);
+        const end=Math.min(duration,(i+1)*slot).toFixed(2);
+        overlays.push(...lineDrawFiles(outFile,wrapWords(beat,22,2),{
+          key:`beat-${i}`,y:525,size:38,gap:48,box:'black@0.48',border:16,
+          enable:`between(t,${start},${end})`
+        }));
+      });
+    }
   }else{
-    args=['-y','-f','lavfi','-i','color=c=0x11141c:s=720x1280:r=24','-i',audioFile,
-      '-vf',`drawbox=x=45:y=330:w=630:h=390:color=0x252a38@0.92:t=fill,drawbox=x=75:y=360:w=570:h=330:color=0x171b25@1:t=fill,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='${name}':fontcolor=white:fontsize=38:x=(w-text_w)/2:y=500,${overlays}`,
-      '-map','0:v','-map','1:a','-c:v','libx264','-preset','ultrafast','-threads','2','-pix_fmt','yuv420p','-r','24','-c:a','aac','-b:a','96k','-shortest','-movflags','+faststart',outFile]
+    overlays.push(...lineDrawFiles(outFile,wrapWords(product?.name||concept.title||'',26,2),{
+      key:'title',y:710,size:34,gap:44,box:'black@0.48',border:14
+    }));
   }
-  await run('ffmpeg',args);
-  return outFile
+
+  overlays.push(...lineDrawFiles(outFile,wrapWords(concept.cta||'Tu connaissais ?',28,2),{
+    key:'cta',y:1130,size:24,gap:34,box:'black@0.55',border:10,font:'DejaVuSans.ttf',
+    enable:`gte(t,${Math.max(0,duration-3.2).toFixed(2)})`
+  }));
+
+  const vfBase=imageFile&&fs.existsSync(imageFile)
+    ? `scale=900:1600:force_original_aspect_ratio=increase,crop=720:1280,zoompan=z='min(zoom+0.00045,1.05)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=720x1280:fps=24,eq=brightness=-0.12:saturation=1.05,drawbox=x=0:y=0:w=iw:h=260:color=black@0.20:t=fill,drawbox=x=0:y=900:w=iw:h=380:color=black@0.18:t=fill`
+    : `drawbox=x=0:y=0:w=iw:h=1280:color=0x10131b@1:t=fill,drawbox=x=36:y=320:w=648:h=400:color=0x1e2534@1:t=fill,drawbox=x=54:y=338:w=612:h=364:color=0x151a24@1:t=fill`;
+
+  const args=imageFile&&fs.existsSync(imageFile)
+    ? ['-y','-loop','1','-framerate','24','-i',imageFile,'-i',audioFile,'-vf',`${vfBase},${overlays.join(',')}`,'-map','0:v','-map','1:a','-c:v','libx264','-preset','ultrafast','-threads','2','-pix_fmt','yuv420p','-r','24','-c:a','aac','-b:a','96k','-t',String(duration),'-movflags','+faststart',outFile]
+    : ['-y','-f','lavfi','-i','color=c=0x10131b:s=720x1280:r=24','-i',audioFile,'-vf',`${vfBase},${overlays.join(',')}`,'-map','0:v','-map','1:a','-c:v','libx264','-preset','ultrafast','-threads','2','-pix_fmt','yuv420p','-r','24','-c:a','aac','-b:a','96k','-t',String(duration),'-movflags','+faststart',outFile];
+
+  try{
+    await run('ffmpeg',args);
+    return outFile;
+  }finally{
+    for(const f of fs.readdirSync(path.dirname(outFile))){
+      if(f.startsWith(`.${path.basename(outFile)}.`)&&f.endsWith('.txt')){
+        try{fs.unlinkSync(path.join(path.dirname(outFile),f))}catch{}
+      }
+    }
+  }
 }
 export function run(cmd,args){return new Promise((resolve,reject)=>{const p=spawn(cmd,args,{stdio:['ignore','pipe','pipe']});let err='';p.stderr.on('data',d=>err+=d.toString());p.on('error',reject);p.on('close',code=>code===0?resolve():reject(new Error(`${cmd} exited ${code}: ${err.slice(-1800)}`)))})}
 export async function commandExists(cmd){return new Promise(resolve=>{const p=spawn(cmd,['-version']);p.on('error',()=>resolve(false));p.on('close',c=>resolve(c===0))})}
